@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.6.11828.311 oobstable
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DvergerAutomation", "DvergerAutomation.csproj", "{5E54E41C-F6B1-DE96-B359-06E95AB69C3F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5E54E41C-F6B1-DE96-B359-06E95AB69C3F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5E54E41C-F6B1-DE96-B359-06E95AB69C3F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5E54E41C-F6B1-DE96-B359-06E95AB69C3F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5E54E41C-F6B1-DE96-B359-06E95AB69C3F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {3BBC5C23-2D20-4369-9878-505820097595}
+	EndGlobalSection
+EndGlobal
