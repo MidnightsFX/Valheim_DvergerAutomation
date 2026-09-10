@@ -386,6 +386,9 @@ namespace DvergerAutomation {
                 foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
                     // Mirror CountItems(name, -1, matchWorldLevel: true): any quality, world-level gated.
                     if (item.m_worldLevel < worldLevel) { continue; }
+                    // Enchanted gear is not spendable as plain material, so it must not be counted as
+                    // such either - otherwise a chest of legendaries reads as free crafting stock.
+                    if (EpicLootIntegration.IsProtectedItem(item)) { continue; }
                     string itemName = item.m_shared.m_name;
                     AggCounts.TryGetValue(itemName, out int cur);
                     AggCounts[itemName] = cur + item.m_stack;

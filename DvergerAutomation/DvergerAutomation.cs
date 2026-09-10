@@ -13,12 +13,15 @@ namespace DvergerAutomation
 {
     [BepInPlugin(PluginGUID, PluginName, PluginVersion)]
     [BepInDependency(Jotunn.Main.ModGuid)]
+    // Soft: Epic Loot is optional, but when it is installed it has to be loaded before Awake runs here,
+    // or the reflection-bound API cannot resolve its assembly yet and the provider silently never registers.
+    [BepInDependency(EpicLootIntegration.EpicLootGUID, BepInDependency.DependencyFlags.SoftDependency)]
     [NetworkCompatibility(CompatibilityLevel.EveryoneMustHaveMod, VersionStrictness.Minor)]
     internal class DvergerAutomation : BaseUnityPlugin
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "1.0.0";
 
         internal static ManualLogSource Log;
         internal ValConfig cfg;
@@ -38,6 +41,12 @@ namespace DvergerAutomation
 
             LocalizationLoader.AddLocalizations();
             AddPieces();
+            EpicLootIntegration.Register();
+        }
+
+        public void OnDestroy()
+        {
+            EpicLootIntegration.Unregister();
         }
 
         public void AddPieces() {

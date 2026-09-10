@@ -23,28 +23,69 @@ namespace DvergerAutomation {
                 if (container == null) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null) { continue; }
-                total += inv.CountItems(name, quality);
+                // Counted by hand rather than via Inventory.CountItems so enchanted gear is left out of
+                // the total, matching what RemoveFromContainers below is willing to spend. Mirrors
+                // CountItems(name, quality, matchWorldLevel: true) otherwise.
+                foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
+                    if (!Matches(item, name, quality)) { continue; }
+                    total += item.m_stack;
+                }
             }
             return total;
         }
 
-        // Removes up to 'amount' of 'name' across the pool. Claims ownership before mutating a chest we do
-        // not own so Container.OnContainerChanged -> Save actually persists/syncs the change.
-        internal static void RemoveFromContainers(List<Container> pool, string name, int amount, int itemQuality) {
+        // Shared predicate for the by-name material paths: vanilla's own name/quality/world-level test,
+        // plus Epic Loot's magic items, which share m_shared.m_name with their mundane counterpart and
+        // must never be spent as one.
+        private static bool Matches(ItemDrop.ItemData item, string name, int quality) {
+            if (item == null || item.m_shared == null) { return false; }
+            if (item.m_shared.m_name != name) { return false; }
+            if (quality >= 0 && item.m_quality != quality) { return false; }
+            if (item.m_worldLevel < Game.m_worldLevel) { return false; }
+            return !EpicLootIntegration.IsProtectedItem(item);
+        }
+
+        // Claims ownership before mutating a chest we do not own, so Container.OnContainerChanged -> Save
+        // actually persists and syncs the change.
+        internal static void ClaimOwnership(Container container) {
+            if (container == null) { return; }
+            if (container.m_nview != null && container.m_nview.IsValid() && !container.m_nview.IsOwner()) {
+                container.m_nview.ClaimOwnership();
+            }
+        }
+
+        /// <summary>
+        /// Removes up to <paramref name="amount"/> of <paramref name="name"/> across the pool and returns
+        /// how many were actually taken (Epic Loot's inventory provider contract requires the count).
+        /// </summary>
+        internal static int RemoveFromContainers(List<Container> pool, string name, int amount, int itemQuality) {
+            int removed = 0;
             foreach (Container container in pool) {
                 if (amount <= 0) { break; }
                 if (container == null) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null) { continue; }
-                int have = inv.CountItems(name, itemQuality);
-                if (have <= 0) { continue; }
-                int take = Mathf.Min(have, amount);
-                if (container.m_nview != null && container.m_nview.IsValid() && !container.m_nview.IsOwner()) {
-                    container.m_nview.ClaimOwnership();
+
+                // Removed per instance rather than by name so protected items can be stepped over; vanilla's
+                // Inventory.RemoveItem(string, ...) would happily eat them. GetAllItems hands back the live
+                // backing list and emptied stacks drop out of it, so walk it backwards.
+                bool claimed = false;
+                List<ItemDrop.ItemData> items = inv.GetAllItems();
+                for (int i = items.Count - 1; i >= 0 && amount > 0; --i) {
+                    ItemDrop.ItemData item = items[i];
+                    if (!Matches(item, name, itemQuality)) { continue; }
+
+                    if (!claimed) {
+                        ClaimOwnership(container);
+                        claimed = true;
+                    }
+                    int take = Mathf.Min(item.m_stack, amount);
+                    inv.RemoveItem(item, take);
+                    amount -= take;
+                    removed += take;
                 }
-                inv.RemoveItem(name, take, itemQuality);
-                amount -= take;
             }
+            return removed;
         }
     }
 
