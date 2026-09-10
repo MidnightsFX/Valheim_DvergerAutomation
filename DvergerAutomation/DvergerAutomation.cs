@@ -21,7 +21,7 @@ namespace DvergerAutomation
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "0.5.0";
 
         internal static ManualLogSource Log;
         internal ValConfig cfg;
