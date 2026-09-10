@@ -16,6 +16,10 @@
 # Mono auto generated files
 mono_crash.*
 
+# MagicaCloth
+MagicaCloth2.meta
+DvergerAutomationUnity/Assets/MagicaCloth2/
+
 # Build results
 [Dd]ebug/
 [Dd]ebugPublic/

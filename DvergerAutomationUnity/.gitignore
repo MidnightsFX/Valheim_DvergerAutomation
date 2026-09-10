@@ -84,3 +84,8 @@ crashlytics-build.properties
 
 # AssetBundles (manual copy these)
 /[Aa]ssetBundles*
+
+# MagicaCloth2 (paid asset, dont distribute)
+# The .meta needs an explicit rule here to beat the !/[Aa]ssets/**/*.meta negation above
+/[Aa]ssets/MagicaCloth2/
+/[Aa]ssets/MagicaCloth2.meta
