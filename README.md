@@ -1,58 +1,100 @@
-# JötunnModStub
+# DvergerAutomation
 
-A Valheim mod stub project using [Jötunn](https://github.com/Valheim-Modding/Jotunn) including build tools and a basic Unity project stub.
-There is no actual plugin content included, just a minimum plugin class. 
+Build a **Dverger Autosorter** and the chests around it become one shared material pool. Craft at any
+workbench it links, build with the Hammer anywhere in its range, and the ingredients come straight out
+of your storage instead of your backpack.
 
-#  Setup Guide
+No more hauling stacks of wood and iron out of chests before every build session.
 
-Please see [Jötunn Docs](https://valheim-modding.github.io/Jotunn/guides/overview.html) detailed documentation and setup.
+## Features
 
-### Post Build automations
+### Craft and build from nearby storage
 
-Included in this repo is a PowerShell script `publish.ps1`.
-The script is referenced in the project file as a post-build event.
-Depending on the chosen configuration in Visual Studio the script executes the following actions.
+The Autosorter periodically scans its surroundings and links two things:
 
-### Building Debug
+- **Crafting stations** in range. Standing at a linked station, recipes count the linked chests as if
+  their contents were in your inventory - both the ingredient counts shown in the panel and whether
+  the recipe is craftable at all.
+- **Storage chests** in range. Building with the Hammer anywhere inside the Autosorter's radius pulls
+  materials from those same chests.
 
-The compiled dll and a dll.mdb debug file are copied to `<ValheimDir>\BepInEx\plugins` (or the path set in MOD_DEPLOYPATH).
+Your own inventory is always spent first; only the shortfall is drawn from storage.
 
-### Building Release
+### Surtling Core slots
 
-A compressed file with the binaries is created in `<DvergerAutomation>\Packages`ready for upload to ThunderStore.
-Dont forget to include your information in the manifest.json and to change the project's readme file.
+The Autosorter has **four Surtling Core slots**. Interact with a slot to insert a core, or to take one
+back out. Cores are stored on the piece itself, replicate to other players, survive reloads, and drop
+on the ground if the Autosorter is destroyed or deconstructed - they are never lost.
 
-## Developing Assets with Unity
+By default the Autosorter stays dormant until at least one core is inserted, and **each core extends
+the link radius** (+25m by default, on top of the 20m base). Four cores reach 120m. Both the
+requirement and the per-core bonus are configurable.
 
-New Assets can be created with Unity and imported into Valheim using the mod.
-A Unity project is included in this repository under `<DvergerAutomation>\JotunnModUnity`.
+### Respects locks and wards
 
-### Unity Editor Setup
+A chest is only linked if you could open it yourself. A chest set to **Private** is linked only for
+the player who placed it, a chest set to **Group** is skipped entirely, and any chest inside a ward
+you are not permitted in is skipped. Your own ward is fine.
 
-1. [Download](https://public-cdn.cloud.unity3d.com/hub/prod/UnityHubSetup.exe) UnityHub directly from Unity or install it with the Visual Studio Installer via `Individual Components` -> `Visual Studio Tools for Unity`
-2. You will need an Unity account to register your PC and get a free licence. Create the account, login with it in Unity Hub and get your licence via `Settings` -> `Licence Management`
-3. Install Unity Editor version 2022.3.17f
-4. Compile the project. This copies all assemblies into `<DvergerAutomation>\JotunnModUnity\Assets\Assemblies`. Don't open Unity yet before this step, it will remove assembly references.
-5. **Warning:** These assembly files are copyrighted material and you can theoretically get into trouble when you distribute them in your github repository. To avoid that there is a .gitignore file in the Unity project folder. Keep that when you clone or copy this repository
-6. Open Unity Hub and add the JotunnModUnity project
-7. Open the project in Unity
-8. Install the `AssetBundle Browser` package in the Unity Editor via `Window`-> `Package Manager` for easy bundle creation
+### Epic Loot support (optional)
 
-## Debugging
+If [Epic Loot](https://thunderstore.io/c/valheim/p/RandyKnapp/EpicLoot/) is installed, DvergerAutomation
+registers itself with it properly rather than patching around it:
 
-See the Wiki page [Debugging Plugins via IDE](https://github.com/Valheim-Modding/Wiki/wiki/Debugging-Plugins-via-IDE) for more information
+- **The enchanting table draws from linked chests.** Runestones, shards and dust stay in storage
+  instead of your inventory.
+- **Enchanted gear is protected.** Vanilla ingredient consumption matches items by name, and an
+  enchanted item shares its name with the ordinary version - so without this, a recipe could quietly
+  consume a legendary sitting in one of your chests. DvergerAutomation refuses to spend magic items
+  as plain crafting material, and does not count them as such either.
 
-## Actions after a game update
+Epic Loot is a soft dependency: not having it installed changes nothing.
 
-When Valheim updates it is likely that parts of the assembly files change.
-If this is the case, the references to the assembly files must be renewed in Visual Studio and Unity.
+## Installation (manual)
 
-### Prebuild actions
+1. Install [BepInEx](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/) and
+   [Jotunn](https://thunderstore.io/c/valheim/p/ValheimModding/Jotunn/).
+2. Drop `DvergerAutomation.dll` into `<Valheim>/BepInEx/plugins/`.
 
-1. There is a file called DoPrebuild.props included in the solution. When you set its only value to true, Jötunn will automatically generate publicized assemblies for you. Otherwise you have to do this step manually.
+**Multiplayer:** every player on the server needs the mod, and versions must match on major and minor.
+The Autosorter's settings are server-authoritative and only admins can change them.
 
-### Unity actions
+## Building the Autosorter
 
-1. Copy all `assembly_*.dll` from `<ValheimDir>\valheim_Data\Managed` into `<DvergerAutomation>\JotunnModUnity\Assets\Assemblies`. <br />
-  **Do this directly in the filesystem - don't import the dlls in Unity**.
-2. Go to Unity Editor and press `Ctrl+R`. This reloads all files from the filesystem and "re-imports" the copied dlls into the project.
+<img src="https://github.com/MidnightsFX/Valheim_DvergerAutomation/blob/master/DvergerAutomationUnity/Assets/PrefabIcons/DA_Autosorter.png?raw=true"
+     alt="Dverger Autosorter" align="right" width="160">
+
+Built with the Hammer, in the **Crafting** category, near a **Forge**:
+
+| Material | Amount |
+|---|---|
+| Stone | 20 |
+| Bronze | 8 |
+| Greydwarf eye | 20 |
+| Ectoplasm | 4 |
+
+All costs are refunded on deconstruction.
+
+## Configuration
+
+Settings live under `BepInEx/config/MidngightsFX.DvergerAutomation.cfg`.
+
+| Setting | Default | Range | What it does |
+|---|---|---|---|
+| `Enabled` | `true` | | Master switch for the Autosorter. |
+| `Scan Radius` | `20` | 1-64 | Base radius (meters) in which stations and chests are linked. |
+| `Range Per Core` | `25` | 0-100 | Extra radius added per inserted Surtling Core. |
+| `Require Cores` | `true` | | When on, the Autosorter links nothing until a core is inserted. |
+| `Scan Interval` | `30` | 5-300 | Seconds between scans. Lower reacts to new chests sooner and costs more. |
+| `EnableDebugMode` | `false` | | Verbose logging. Client-side, and hidden behind Advanced. |
+
+Inserting or removing a core relinks immediately rather than waiting for the next scan.
+
+## Known issues
+
+- New chests placed inside the radius are not picked up until the next scan (up to `Scan Interval`
+  seconds). Reinserting a core forces an immediate rescan.
+
+## Changelog
+
+See `CHANGELOG.md`.

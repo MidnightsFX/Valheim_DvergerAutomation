@@ -59,7 +59,6 @@ if [ "$target" = "Release" ]; then
     packagePath="$projectPath/Package"
     mkdir -p "$packagePath/plugins"
     cp "$targetPath/$targetAssembly" "$packagePath/plugins/"
-    cp "$projectPath/README.md" "$packagePath/"
 
     if command -v zip > /dev/null; then
         [ -e "$name.zip" ] && rm "$name.zip"

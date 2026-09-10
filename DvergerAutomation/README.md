@@ -61,6 +61,9 @@ The Autosorter's settings are server-authoritative and only admins can change th
 
 ## Building the Autosorter
 
+<img src="https://github.com/MidnightsFX/Valheim_DvergerAutomation/blob/master/DvergerAutomationUnity/Assets/PrefabIcons/DA_Autosorter.png?raw=true"
+     alt="Dverger Autosorter" align="right" width="160">
+
 Built with the Hammer, in the **Crafting** category, near a **Forge**:
 
 | Material | Amount |
@@ -87,3 +90,11 @@ Settings live under `BepInEx/config/MidngightsFX.DvergerAutomation.cfg`.
 
 Inserting or removing a core relinks immediately rather than waiting for the next scan.
 
+## Known issues
+
+- New chests placed inside the radius are not picked up until the next scan (up to `Scan Interval`
+  seconds). Reinserting a core forces an immediate rescan.
+
+## Changelog
+
+See `CHANGELOG.md`.

@@ -61,6 +61,8 @@ The Autosorter's settings are server-authoritative and only admins can change th
 
 ## Building the Autosorter
 
+![Dverger Autosorter](https://github.com/MidnightsFX/Valheim_DvergerAutomation/blob/master/DvergerAutomationUnity/Assets/PrefabIcons/DA_Autosorter.png?raw=true)
+
 Built with the Hammer, in the **Crafting** category, near a **Forge**:
 
 | Material | Amount |
