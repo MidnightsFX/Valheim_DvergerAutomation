@@ -56,18 +56,39 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// True when this item must not be consumed as a by-name crafting material.
+        /// True when Epic Loot considers this item enchanted.
         ///
-        /// Ordered so the common case costs nothing: with Epic Loot absent it stops at
-        /// <see cref="Active"/>, and Epic Loot only enchants equipment, which never stacks in Valheim -
-        /// so materials, which are what recipes actually ask for, stop at the stack-size check before
-        /// reaching the reflection call. That matters because the per-frame aggregate in
-        /// <see cref="ContainerNetwork"/> walks every item in every linked chest.
+        /// Deliberately not gated on <see cref="Active"/>, unlike <see cref="IsProtectedItem"/>: whether
+        /// an item is magical is a fact about the item, not about whether our inventory provider was
+        /// accepted. The auto-store switch has to hold even when registration was refused, or "do not
+        /// sort magic items" would silently stop applying.
+        ///
+        /// Ordered so the common case costs nothing: Epic Loot only enchants equipment, which never
+        /// stacks in Valheim, so materials stop at the stack-size check before reaching the reflection
+        /// call. With Epic Loot absent the shim resolves nothing and returns false.
         /// </summary>
-        internal static bool IsProtectedItem(ItemDrop.ItemData item) {
-            if (!Active || item == null || item.m_shared == null) { return false; }
+        internal static bool IsMagicItem(ItemDrop.ItemData item) {
+            if (item == null || item.m_shared == null) { return false; }
             if (item.m_shared.m_maxStackSize > 1) { return false; }
             return EpicLootAPI.EpicLoot.IsMagicItem(item);
+        }
+
+        /// <summary>
+        /// True when this item must not be consumed as a by-name crafting material. Additionally gated on
+        /// <see cref="Active"/> so that with Epic Loot absent the per-frame aggregate in
+        /// <see cref="ContainerNetwork"/>, which walks every item in every linked chest, stops immediately.
+        /// </summary>
+        internal static bool IsProtectedItem(ItemDrop.ItemData item) {
+            return Active && IsMagicItem(item);
+        }
+
+        /// <summary>
+        /// Drops the frame memo behind <see cref="GetItems"/>. Must be called whenever a linked chest's
+        /// contents change outside a rescan, or the enchanting table is served the pre-change item list
+        /// for the rest of the frame.
+        /// </summary>
+        internal static void InvalidateItemCache() {
+            itemsFrame = -1;
         }
 
         // ---- provider callbacks -------------------------------------------------

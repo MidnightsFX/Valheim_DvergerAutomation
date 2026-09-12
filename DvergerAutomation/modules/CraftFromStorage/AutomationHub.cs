@@ -36,15 +36,28 @@ namespace DvergerAutomation {
         internal readonly HashSet<CraftingStation> LinkedStations = new HashSet<CraftingStation>();
         internal readonly List<Container> LinkedContainers = new List<Container>();
 
+        /// <summary>
+        /// The piece's own deposit inventory (the StoreGoods child), into which the player drops goods
+        /// for <see cref="AutoStore"/> to distribute. Resolved from the hierarchy rather than serialized
+        /// so the prefab needs no extra Unity wiring.
+        /// </summary>
+        internal Container DepositBox { get; private set; }
+
         private Coroutine scanLoop;
         private static int pieceMask = 0;
 
         private void Awake() {
             nview = GetComponent<ZNetView>();
+            // The only Container under the piece is the deposit box; the root itself has none.
+            DepositBox = GetComponentInChildren<Container>(includeInactive: true);
             if (nview != null && nview.GetZDO() != null) {
                 nview.Register("DA_RefreshCores", new Action<long>(RPC_RefreshCores));
                 WearNTear wnt = GetComponent<WearNTear>();
                 if (wnt != null) { wnt.m_onDestroyed += OnDestroyedDropCores; }
+                // Live pieces only - the placement ghost has no ZDO and no inventory to size or protect.
+                // Registered here rather than in OnEnable because Container.Load can run for the box as soon as
+                // its first CheckForChanges tick, and the load guard has to recognise it by then.
+                AutoStore.RegisterDepositBox(DepositBox);
             }
 
             // The Switch callbacks are C# delegates and cannot be assigned in Unity, so wire them here.
@@ -70,6 +83,10 @@ namespace DvergerAutomation {
             LinkedStations.Clear();
             LinkedContainers.Clear();
             ContainerNetwork.Unregister(this);
+        }
+
+        private void OnDestroy() {
+            AutoStore.UnregisterDepositBox(DepositBox);
         }
 
         private IEnumerator ScanLoopRoutine() {
@@ -115,6 +132,10 @@ namespace DvergerAutomation {
                 if (hit == null) { continue; }
                 Container container = hit.GetComponentInParent<Container>();
                 if (container == null || !seen.Add(container)) { continue; }
+                // An autosorter's own deposit box is a transit buffer, not storage: never a crafting
+                // source, and never a sort target - it holds the very items being sorted, so it would
+                // match everything and file them straight back into itself.
+                if (container.GetComponentInParent<AutomationHub>() != null) { continue; }
                 if (IsAccessible(container, playerId)) {
                     LinkedContainers.Add(container);
                 }
@@ -125,6 +146,14 @@ namespace DvergerAutomation {
             }
 
             ContainerNetwork.RebuildStationCache();
+        }
+
+        /// <summary>
+        /// Forces an immediate relink. Used by the auto-store pass so a chest built since the last scan
+        /// tick is still a valid destination.
+        /// </summary>
+        internal void Rescan() {
+            Scan();
         }
 
         // A chest is usable only if the local player can freely access it: not Private/Group-locked to
@@ -323,9 +352,21 @@ namespace DvergerAutomation {
                 }
             }
             // Chest membership changed: invalidate the frame-memoized aggregate / near-point caches.
+            nearPointFrame = -1;
+            InvalidateItemCounts();
+        }
+
+        /// <summary>
+        /// Drops the frame-memoized item aggregate. Chest *membership* changes go through
+        /// <see cref="RebuildStationCache"/>, but chest *contents* can change under us - auto-store moving
+        /// items in, crafting taking them out - and the aggregate would otherwise serve counts from before
+        /// the change for the rest of the frame.
+        /// </summary>
+        internal static void InvalidateItemCounts() {
             aggFrame = -1;
             aggPool = null;
-            nearPointFrame = -1;
+            // Epic Loot's enchanting table reads a memo of the same pool, on the same per-frame basis.
+            EpicLootIntegration.InvalidateItemCache();
         }
 
         /// <summary>Containers linked to the given crafting station (station-crafting pool). O(1) lookup.</summary>

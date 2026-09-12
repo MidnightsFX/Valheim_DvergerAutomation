@@ -21,6 +21,12 @@ namespace DvergerAutomation {
         public static ConfigEntry<float> RangePerCore;
         public static ConfigEntry<bool> RequireCores;
 
+        // Dverger AutoSorter - "auto store" deposit box
+        public static ConfigEntry<bool> AutoStoreEnabled;
+        public static ConfigEntry<bool> SortMagicItems;
+        public static ConfigEntry<int> DepositBoxWidth;
+        public static ConfigEntry<int> DepositBoxHeight;
+
         public const string cfgFolder = "DvergerAutomation";
 
         public ValConfig(ConfigFile cf) {
@@ -45,6 +51,12 @@ namespace DvergerAutomation {
             ScanRadius = BindServerConfig("Dverger AutoSorter", "Scan Radius", 20f, "Radius (meters) around the AutoSorter in which crafting stations and chests are linked.", false, 1, 64);
             RangePerCore = BindServerConfig("Dverger AutoSorter", "Range Per Core", 25f, "Extra link radius (meters) added per inserted Surtling Core.", false, 0, 100);
             RequireCores = BindServerConfig("Dverger AutoSorter", "Require Cores", true, "When enabled, the AutoSorter only links stations/chests after at least one Surtling Core is inserted.");
+            AutoStoreEnabled = BindServerConfig("Dverger AutoSorter", "Auto Store", true, "Enables the AutoSorter's deposit box: closing it distributes what you left inside into linked chests that already hold the same item. Anything with no home is handed back to you.");
+            SortMagicItems = BindServerConfig("Dverger AutoSorter", "Sort Magic Items", false, "When enabled, enchanted (Epic Loot) items are distributed like anything else. Off by default so a legendary is never filed away into a chest of ordinary gear.");
+            // Defaults match the player's own inventory (Humanoid.m_inventory is a hard-coded 8x4), so one
+            // full backpack always fits in a single trip.
+            DepositBoxWidth = BindServerConfig("Dverger AutoSorter", "Deposit Box Width", AutoStore.DefaultWidth, $"Columns in the AutoSorter's deposit box. Capped at {AutoStore.MaxWidth}: the container panel does not scroll sideways, so wider grids spill off the screen.", false, AutoStore.MinSize, AutoStore.MaxWidth);
+            DepositBoxHeight = BindServerConfig("Dverger AutoSorter", "Deposit Box Height", AutoStore.DefaultHeight, "Rows in the AutoSorter's deposit box. Rows beyond what the container panel shows scroll.", false, AutoStore.MinSize, AutoStore.MaxHeight);
         }
 
         /// <summary>

@@ -80,6 +80,13 @@ namespace DvergerAutomation.Common {
         static List<JotunnBuildPiece> BuildPieces = new List<JotunnBuildPiece>();
         static bool PiecesReady = false;
 
+        // Prefab ids that shipped in a default recipe but do not exist in game. A saved config still
+        // holding one leaves the piece with an unresolvable requirement, which makes it unbuildable and
+        // cannot be recovered from in-game, so the entry is forced back to the default on load.
+        static readonly HashSet<string> KnownBadPrefabIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "GreyDwarfEyes", // <=0.5.0 default; the real item id is GreydwarfEye
+        };
+
         public static void RegisterJotunnPiece(JotunnBuildPiece jbuildpiece) {
 
             LoadedGameObjects LGos = new LoadedGameObjects();
@@ -109,6 +116,9 @@ namespace DvergerAutomation.Common {
                 // every mod prefab is resolvable. This also covers values that arrived early via config sync.
                 ApplyWorkbench(jbuildpiece);
                 ApplyCategory(jbuildpiece);
+                // The prefab database is populated by now, so a config naming an item that does not
+                // exist can finally be told apart from a valid customisation and reset.
+                ResetUnresolvableRecipeConfig(jbuildpiece);
                 ApplyRecipe(jbuildpiece);
             }
             PrefabManager.OnPrefabsRegistered += ResolveAndApplyScenePrefab;
@@ -148,11 +158,13 @@ namespace DvergerAutomation.Common {
             jbuildpiece.Cfgs.PieceCategory.SettingChanged += CraftingCategory_SettingChanged;
 
             // Build out the internal default recipe
-            List<string> raw_recipe_default = new List<string>();
-            foreach (var entry in jbuildpiece.PieceCost) { raw_recipe_default.Add($"{entry.prefab},{entry.amount},{entry.refundable}"); }
-            string recipe_cfg_default = string.Join("|", raw_recipe_default);
+            string recipe_cfg_default = BuildRecipeString(jbuildpiece.PieceCost);
             // Wire up the config and on-change for piece costs
             jbuildpiece.Cfgs.PieceCost = ValConfig.BindServerConfig($"{jbuildpiece.Name}", $"Building Cost", recipe_cfg_default, $"Cost to build. Find item ids: https://valheim.fandom.com/wiki/Item_IDs Format: resouce_id,amount,refund eg: Wood,8,true|LeatherScraps,4,false", advanced: true);
+            // Force out a saved recipe carried over from a build that shipped a bad prefab id. This has
+            // to happen before the piece is registered below, and the prefab database is not populated
+            // yet, so the ids are matched against a known-bad list rather than looked up.
+            ResetRecipeConfigNamingKnownBadIds(jbuildpiece, recipe_cfg_default);
             if (PieceRecipeConfigUpdater(jbuildpiece, jbuildpiece.Cfgs.PieceCost.Value, false) == false) {
                 Logger.LogWarning($"{jbuildpiece.Name} has an invalid piece cost. The default will be used instead.");
                 PieceRecipeConfigUpdater(jbuildpiece, recipe_cfg_default, false);
@@ -238,6 +250,47 @@ namespace DvergerAutomation.Common {
                 // Set this piece not craftable
                 jbuildpiece.Objs.ScenePrefab.GetComponent<Piece>().m_enabled = false;
             }
+        }
+
+        // Serialises a recipe back into the "prefab,amount,refund|..." config format.
+        private static string BuildRecipeString(List<PieceCost> recipe) {
+            List<string> raw_recipe = new List<string>();
+            foreach (var entry in recipe) { raw_recipe.Add($"{entry.prefab},{entry.amount},{entry.refundable}"); }
+            return string.Join("|", raw_recipe);
+        }
+
+        // Returns the prefab ids named by a raw recipe string. Malformed entries yield nothing; the
+        // parser in PieceRecipeConfigUpdater reports those.
+        private static IEnumerable<string> RecipePrefabIds(string rawrecipe) {
+            foreach (String recipe_entry in rawrecipe.Split('|')) {
+                String[] recipe_segments = recipe_entry.Split(',');
+                if (recipe_segments.Length != 3 || recipe_segments[0].Length == 0) { continue; }
+                yield return recipe_segments[0];
+            }
+        }
+
+        // Bind-time reset: only ids on the known-bad list can be detected this early.
+        private static void ResetRecipeConfigNamingKnownBadIds(JotunnBuildPiece jbuildpiece, string recipe_cfg_default) {
+            string configured = jbuildpiece.Cfgs.PieceCost.Value;
+            List<string> bad_ids = RecipePrefabIds(configured).Where(id => KnownBadPrefabIds.Contains(id)).ToList();
+            if (bad_ids.Count == 0) { return; }
+            Logger.LogWarning($"{jbuildpiece.Name} 'Building Cost' names item id(s) that do not exist ({string.Join(", ", bad_ids.ToArray())}); resetting it to the default: {recipe_cfg_default}");
+            jbuildpiece.Cfgs.PieceCost.Value = recipe_cfg_default;
+        }
+
+        // Runtime reset: catches any unresolvable id, not just the ones we shipped. Callers must ensure
+        // the prefab database is populated (PiecesReady) before invoking this.
+        private static void ResetUnresolvableRecipeConfig(JotunnBuildPiece jbuildpiece) {
+            string configured = jbuildpiece.Cfgs.PieceCost.Value;
+            List<string> bad_ids = RecipePrefabIds(configured).Where(id => PrefabManager.Instance.GetPrefab(id) == null).ToList();
+            if (bad_ids.Count == 0) { return; }
+
+            string recipe_cfg_default = BuildRecipeString(jbuildpiece.PieceCost);
+            Logger.LogWarning($"{jbuildpiece.Name} 'Building Cost' ({configured}) names item id(s) that do not exist ({string.Join(", ", bad_ids.ToArray())}); resetting it to the default: {recipe_cfg_default}");
+            // Assigning an unchanged value does not raise SettingChanged, so reparse here rather than
+            // relying on the handler to refresh UpdatedCost for us.
+            jbuildpiece.Cfgs.PieceCost.Value = recipe_cfg_default;
+            PieceRecipeConfigUpdater(jbuildpiece, recipe_cfg_default);
         }
 
         private static bool PieceRecipeConfigUpdater(JotunnBuildPiece jbuildpiece, string rawrecipe, bool during_runtime = true) {

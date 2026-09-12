@@ -85,6 +85,8 @@ namespace DvergerAutomation {
                     removed += take;
                 }
             }
+            // Chest contents just changed: the frame-memoized aggregate is now stale.
+            if (removed > 0) { ContainerNetwork.InvalidateItemCounts(); }
             return removed;
         }
     }

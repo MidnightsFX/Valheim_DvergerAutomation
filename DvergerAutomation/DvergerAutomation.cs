@@ -21,7 +21,7 @@ namespace DvergerAutomation
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "0.5.0";
+        public const string PluginVersion = "0.6.0";
 
         internal static ManualLogSource Log;
         internal ValConfig cfg;
@@ -36,6 +36,11 @@ namespace DvergerAutomation
             cfg = new ValConfig(Config);
 
             EmbeddedResourceBundle = AssetUtils.LoadAssetBundleFromResources("DvergerAutomation.embedded.automation", typeof(DvergerAutomation).Assembly);
+
+            // Finish the deposit box before the piece is registered, let alone instantiated:
+            // Container.Awake reads those fields to build its inventory and bind its network view.
+            // LoadAsset hands back a cached instance, so this is the same object AddPieces then registers.
+            AutoStore.ConfigureDepositPrefab(EmbeddedResourceBundle.LoadAsset<GameObject>("DA_Autosorter.prefab"));
 
             HarmonyInstance = Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), harmonyInstanceId: PluginGUID);
 
@@ -59,7 +64,7 @@ namespace DvergerAutomation
             DA_AutSorter.PieceCost = new List<JotunnPiece.PieceCost>() {
                 { new JotunnPiece.PieceCost() { prefab = "Stone", amount = 20, refundable = true } },
                 { new JotunnPiece.PieceCost() { prefab = "Bronze", amount = 8, refundable = true } },
-                { new JotunnPiece.PieceCost() { prefab = "GreyDwarfEyes", amount = 20, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "GreydwarfEye", amount = 20, refundable = true } },
                 { new JotunnPiece.PieceCost() { prefab = "Ectoplasm", amount = 4, refundable = true } }
             };
             JotunnPiece.RegisterJotunnPiece(DA_AutSorter);

@@ -36,6 +36,7 @@ Transform:
   - {fileID: 8717334879814620239}
   - {fileID: 2493215011926377428}
   - {fileID: 6894246852972870655}
+  - {fileID: 3030964476565570630}
   - {fileID: 5450136299705227482}
   m_Father: {fileID: 894162655848183480}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
@@ -127,6 +128,7 @@ MonoBehaviour:
   m_Script: {fileID: 1863081269, guid: 20b7f6e4177840c46bb41b6c7cd31fd4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  m_hoverOffset: 0
   m_hoverText: $DA_Add_Core
   m_name: Core1
   m_holdRepeatInterval: -1
@@ -283,6 +285,7 @@ MonoBehaviour:
   m_Script: {fileID: 1863081269, guid: 20b7f6e4177840c46bb41b6c7cd31fd4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  m_hoverOffset: 0
   m_hoverText: $DA_Add_Core
   m_name: Core4
   m_holdRepeatInterval: -1
@@ -732,6 +735,7 @@ MonoBehaviour:
   m_description: 
   m_enabled: 1
   m_category: 1
+  m_usage: 0
   m_isUpgrade: 0
   m_comfort: 0
   m_comfortGroup: 0
@@ -751,6 +755,8 @@ MonoBehaviour:
   m_noClipping: 0
   m_onlyInTeleportArea: 0
   m_allowedInDungeons: 0
+  m_allowedInDeepSnow: 0
+  m_requireDeepSnow: 0
   m_spaceRequirement: 0
   m_repairPiece: 0
   m_removePiece: 0
@@ -831,8 +837,13 @@ MonoBehaviour:
   m_worn: {fileID: 0}
   m_broken: {fileID: 0}
   m_wet: {fileID: 0}
+  m_snow: {fileID: 0}
+  m_snowWorn: {fileID: 0}
+  m_snowBroken: {fileID: 0}
   m_noRoofWear: 1
+  m_roofCheckOffset: 0
   m_noSupportWear: 1
+  m_snowDamageImmune: 0
   m_ashDamageImmune: 0
   m_ashDamageResist: 0
   m_burnable: 1
@@ -842,6 +853,13 @@ MonoBehaviour:
   m_forceCorrectCOMCalculation: 0
   m_staticPosition: 1
   m_nonSolidRenderers: []
+  m_requiredPersistentEvent: 
+  m_takeDamageIfInsideEvent: 0
+  m_eventDamage: 25
+  m_eventDamageDeviation: 10
+  m_snowBuildup: 0
+  m_requiredBiome: 0
+  m_outsideRequiredBiomeDamage: 25
   m_health: 1000
   m_damages:
     m_blunt: 2
@@ -854,6 +872,7 @@ MonoBehaviour:
     m_lightning: 3
     m_poison: 3
     m_spirit: 3
+    m_nonPlayer: 0
   m_minToolTier: 0
   m_hitNoise: 0
   m_destroyNoise: 0
@@ -866,6 +885,113 @@ MonoBehaviour:
     m_effectPrefabs: []
   m_autoCreateFragments: 1
   m_fragmentRoots: []
+--- !u!1 &5480916231366232067
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 3030964476565570630}
+  - component: {fileID: 3880907826912167539}
+  - component: {fileID: 7361134521742286511}
+  - component: {fileID: 4567302576801122091}
+  m_Layer: 10
+  m_Name: StoreGoods
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &3030964476565570630
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5480916231366232067}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0.003, y: 0.44, z: -0.774}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1887390044286768445}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!135 &3880907826912167539
+SphereCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5480916231366232067}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 3
+  m_Radius: 0.22
+  m_Center: {x: 0, y: 0, z: 0}
+--- !u!114 &7361134521742286511
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5480916231366232067}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 1863081269, guid: 20b7f6e4177840c46bb41b6c7cd31fd4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_hoverOffset: 0
+  m_hoverText: $DA_Store_goods
+  m_name: SendToStorage
+  m_holdRepeatInterval: -1
+--- !u!114 &4567302576801122091
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5480916231366232067}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 1790797106, guid: 20b7f6e4177840c46bb41b6c7cd31fd4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_name: Container
+  m_bkg: {fileID: 0}
+  m_width: 5
+  m_height: 5
+  m_privacy: 2
+  m_checkGuardStone: 0
+  m_autoDestroyEmpty: 0
+  m_defaultItems:
+    m_drops: []
+    m_dropMin: 1
+    m_dropMax: 1
+    m_dropChance: 1
+    m_oneOfEach: 0
+  m_open: {fileID: 0}
+  m_closed: {fileID: 0}
+  m_openEffects:
+    m_effectPrefabs: []
+  m_closeEffects:
+    m_effectPrefabs: []
+  m_rootObjectOverride: {fileID: 0}
+  m_wagon: {fileID: 0}
+  m_destroyedLootPrefab: {fileID: 0}
+  m_hoverOffset: 0
+  m_discoverStat: 206
 --- !u!1 &5754801879549319439
 GameObject:
   m_ObjectHideFlags: 0
@@ -5798,6 +5924,7 @@ MonoBehaviour:
   m_Script: {fileID: 1863081269, guid: 20b7f6e4177840c46bb41b6c7cd31fd4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  m_hoverOffset: 0
   m_hoverText: $DA_Add_Core
   m_name: Core3
   m_holdRepeatInterval: -1
@@ -5868,6 +5995,7 @@ MonoBehaviour:
   m_Script: {fileID: 1863081269, guid: 20b7f6e4177840c46bb41b6c7cd31fd4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  m_hoverOffset: 0
   m_hoverText: $DA_Add_Core
   m_name: Core2
   m_holdRepeatInterval: -1
