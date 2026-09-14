@@ -16,11 +16,16 @@ hand-sorting them back in afterwards.
 
 The Autosorter periodically scans its surroundings and links two things:
 
-- **Crafting stations** in range. Standing at a linked station, recipes count the linked chests as if
-  their contents were in your inventory - both the ingredient counts shown in the panel and whether
-  the recipe is craftable at all.
+- **Crafting stations** in range. Standing at a linked station, recipes treat the linked chests as
+  part of your inventory: a recipe is craftable when your pack and the chests together cover it.
 - **Storage chests** in range. Building with the Hammer anywhere inside the Autosorter's radius pulls
   materials from those same chests.
+
+Each ingredient row shows what storage can contribute: a green **`+N`** after the required amount is
+how many of that material the linked chests hold, and hovering the row spells it out. The amount
+only flashes red when your inventory and the chests together still fall short. The figure counts
+only what the Autosorter would actually spend - enchanted gear and anything sitting in the deposit
+box are left out. Turn it off with `Show Storage Counts` if you would rather keep the vanilla panel.
 
 Your own inventory is always spent first; only the shortfall is drawn from storage.
 
@@ -33,8 +38,8 @@ with, and close it - each stack is filed into the chests in range that **already
   rest in the next one.
 - A chest only qualifies if it already contains that exact item, so nothing ever lands somewhere
   you did not already decide it belongs. Empty chests are never filled.
-- Anything with no home **comes straight back to you** - into your inventory, or onto the ground
-  at the sorter if your pack is full. The box is a chute, not storage: it always ends up empty.
+- Anything with no home **stays in the deposit box**. Take it out yourself, or leave it there: it is
+  tried again every time the box is closed, so it files itself away once a chest for it exists.
 - Only **public** chests receive items. A Private chest is never filled, not even one you placed
   yourself - locking a chest is a decision about what goes in it.
 - Chests another player currently has open are skipped.
@@ -42,8 +47,8 @@ with, and close it - each stack is filed into the chests in range that **already
   Admins can resize it; items already inside are never lost to a smaller size - the box keeps
   room for them until they are sorted out.
 
-Items sitting in the deposit box are deliberately **not** counted as crafting stock - they are on
-their way out, and counting them would show materials that vanish a second later.
+Items sitting in the deposit box are deliberately **not** counted as crafting stock - the box is an
+inbox, not storage, and anything in it is either about to be filed away or waiting for a home.
 
 ### Surtling Core slots
 
@@ -61,6 +66,10 @@ A chest is only linked if you could open it yourself. A chest set to **Private**
 the player who placed it, a chest set to **Group** is skipped entirely, and any chest inside a ward
 you are not permitted in is skipped. Your own ward is fine.
 
+A chest that someone - you or another player - currently has open is left alone until it is closed:
+its contents are not counted, shown, or spent while it is open, so nobody's chest panel is pulled out
+from under them.
+
 Auto-store is stricter still: it only ever files items into public chests, so your own Private
 chests can feed crafting but never receive sorted goods.
 
@@ -76,7 +85,7 @@ registers itself with it properly rather than patching around it:
   consume a legendary sitting in one of your chests. DvergerAutomation refuses to spend magic items
   as plain crafting material, and does not count them as such either.
 - **Auto-store leaves magic items alone** by default, for the same reason: a legendary would
-  otherwise be filed into whatever chest holds the ordinary version. It comes back to you instead.
+  otherwise be filed into whatever chest holds the ordinary version. It stays in the deposit box instead.
   Turn on `Sort Magic Items` if you would rather have them stored.
 
 Epic Loot is a soft dependency: not having it installed changes nothing.
@@ -116,10 +125,11 @@ Settings live under `BepInEx/config/MidngightsFX.DvergerAutomation.cfg`.
 | `Range Per Core` | `25` | 0-100 | Extra radius added per inserted Surtling Core. |
 | `Require Cores` | `true` | | When on, the Autosorter links nothing until a core is inserted. |
 | `Auto Store` | `true` | | Closing the deposit box files its contents into chests that already hold the same item. |
-| `Sort Magic Items` | `false` | | When on, enchanted (Epic Loot) items are filed away too instead of being handed back. |
+| `Sort Magic Items` | `false` | | When on, enchanted (Epic Loot) items are filed away too instead of staying in the deposit box. |
 | `Deposit Box Width` | `8` | 2-8 | Columns in the deposit box. 8 is the most the container panel can show. |
 | `Deposit Box Height` | `4` | 2-8 | Rows in the deposit box. Extra rows scroll. |
 | `Scan Interval` | `30` | 5-300 | Seconds between scans. Lower reacts to new chests sooner and costs more. |
+| `Show Storage Counts` | `true` | | Shows the green `+N` storage figure next to each ingredient. Client-side. |
 | `EnableDebugMode` | `false` | | Verbose logging. Client-side, and hidden behind Advanced. |
 
 Inserting or removing a core relinks immediately rather than waiting for the next scan.

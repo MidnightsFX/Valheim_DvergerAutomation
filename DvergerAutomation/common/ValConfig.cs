@@ -13,6 +13,7 @@ namespace DvergerAutomation {
     internal class ValConfig {
         public static ConfigFile cfg;
         public static ConfigEntry<bool> EnableDebugMode;
+        public static ConfigEntry<bool> ShowStorageCounts;
 
         // Dverger AutoSorter - "craft/build from nearby storage"
         public static ConfigEntry<bool> AutomationEnabled;
@@ -46,12 +47,16 @@ namespace DvergerAutomation {
             EnableDebugMode.SettingChanged += Logger.EnableDebugLogging;
             Logger.CheckEnableDebugLogging();
 
+            // Display only, so it stays client-side: crafting from storage works the same either way.
+            ShowStorageCounts = Config.Bind("Client config", "Show Storage Counts", true,
+                "Shows, after each ingredient's required amount in the crafting panel and build HUD, how many of it the AutoSorter's linked chests hold (as a green +N). Hover the ingredient for the full line.");
+
             AutomationEnabled = BindServerConfig("Dverger AutoSorter", "Enabled", true, "Enables the Dverger AutoSorter: nearby accessible chests act as a shared material pool when crafting at linked stations or building with the Hammer near the sorter.");
             ScanInterval = BindServerConfig("Dverger AutoSorter", "Scan Interval", 30f, "Seconds between scans for nearby crafting stations and storage chests.", false, 5, 300);
             ScanRadius = BindServerConfig("Dverger AutoSorter", "Scan Radius", 20f, "Radius (meters) around the AutoSorter in which crafting stations and chests are linked.", false, 1, 64);
             RangePerCore = BindServerConfig("Dverger AutoSorter", "Range Per Core", 25f, "Extra link radius (meters) added per inserted Surtling Core.", false, 0, 100);
             RequireCores = BindServerConfig("Dverger AutoSorter", "Require Cores", true, "When enabled, the AutoSorter only links stations/chests after at least one Surtling Core is inserted.");
-            AutoStoreEnabled = BindServerConfig("Dverger AutoSorter", "Auto Store", true, "Enables the AutoSorter's deposit box: closing it distributes what you left inside into linked chests that already hold the same item. Anything with no home is handed back to you.");
+            AutoStoreEnabled = BindServerConfig("Dverger AutoSorter", "Auto Store", true, "Enables the AutoSorter's deposit box: closing it distributes what you left inside into linked chests that already hold the same item. Anything with no home stays in the box.");
             SortMagicItems = BindServerConfig("Dverger AutoSorter", "Sort Magic Items", false, "When enabled, enchanted (Epic Loot) items are distributed like anything else. Off by default so a legendary is never filed away into a chest of ordinary gear.");
             // Defaults match the player's own inventory (Humanoid.m_inventory is a hard-coded 8x4), so one
             // full backpack always fits in a single trip.

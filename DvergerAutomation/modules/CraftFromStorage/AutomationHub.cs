@@ -132,9 +132,9 @@ namespace DvergerAutomation {
                 if (hit == null) { continue; }
                 Container container = hit.GetComponentInParent<Container>();
                 if (container == null || !seen.Add(container)) { continue; }
-                // An autosorter's own deposit box is a transit buffer, not storage: never a crafting
-                // source, and never a sort target - it holds the very items being sorted, so it would
-                // match everything and file them straight back into itself.
+                // An autosorter's own deposit box holds items waiting to be sorted, not storage: never a
+                // crafting source, and never a sort target - it holds the very items being sorted, so it
+                // would match everything and file them straight back into itself.
                 if (container.GetComponentInParent<AutomationHub>() != null) { continue; }
                 if (IsAccessible(container, playerId)) {
                     LinkedContainers.Add(container);
@@ -422,6 +422,10 @@ namespace DvergerAutomation {
             int worldLevel = Game.m_worldLevel;
             foreach (Container container in pool) {
                 if (container == null) { continue; }
+                // A chest someone has open cannot be spent from without breaking their session (see
+                // CraftFromStoragePatches.IsBusy), so it must not read as stock either. Rebuilt every
+                // frame, so it drops out and comes back as the chest is opened and closed.
+                if (CraftFromStoragePatches.IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null) { continue; }
                 foreach (ItemDrop.ItemData item in inv.GetAllItems()) {

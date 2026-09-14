@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using HarmonyLib;
+using TMPro;
 using UnityEngine;
 
 namespace DvergerAutomation {
@@ -10,29 +11,17 @@ namespace DvergerAutomation {
     /// rather than from a container attached to the station.
     /// </summary>
     internal static class CraftFromStoragePatches {
-        // Counters marking which UI is currently building its requirement rows. Used to scope the shared
-        // Inventory.CountItems postfix so it only augments the displayed counts while a panel is rendering.
-        internal static int InCraftRequirements = 0;
-        internal static int InBuildRequirements = 0;
+        // The container pool behind whichever requirement panel is being rendered right now - the
+        // crafting panel's ingredient rows or the build HUD's piece cost - and null outside either.
+        // Set by the SetupRequirementList / SetupPieceInfo prefixes, read by the SetupRequirement
+        // postfix that annotates each row. Both panels redraw every frame, so nothing here persists.
+        internal static List<Container> DisplayPool;
+
+        // Tint of the "+N" storage figure on a requirement row. A rich-text span so it keeps its own
+        // colour while vanilla flashes the required amount red around it.
+        internal const string StorageCountColor = "#9BDB9B";
 
         // ---- shared helpers -------------------------------------------------
-
-        internal static int SumContainers(List<Container> pool, string name, int quality) {
-            int total = 0;
-            foreach (Container container in pool) {
-                if (container == null) { continue; }
-                Inventory inv = container.GetInventory();
-                if (inv == null) { continue; }
-                // Counted by hand rather than via Inventory.CountItems so enchanted gear is left out of
-                // the total, matching what RemoveFromContainers below is willing to spend. Mirrors
-                // CountItems(name, quality, matchWorldLevel: true) otherwise.
-                foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
-                    if (!Matches(item, name, quality)) { continue; }
-                    total += item.m_stack;
-                }
-            }
-            return total;
-        }
 
         // Shared predicate for the by-name material paths: vanilla's own name/quality/world-level test,
         // plus Epic Loot's magic items, which share m_shared.m_name with their mundane counterpart and
@@ -55,6 +44,21 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
+        /// True when a chest should be left alone because someone has it open. Claiming ownership out from
+        /// under them blanks their container panel, and their <c>m_inUse</c> can then never clear, because
+        /// <c>Container.SetInUse</c> is itself owner-gated - and a stuck <c>m_inUse</c> blocks
+        /// <c>Container.Load</c>, so their copy of the chest stops updating for good. <c>IsInUse()</c> only
+        /// reports the *local* field, so a remote player's session is visible only through the flag the
+        /// owner mirrors into the ZDO.
+        /// </summary>
+        internal static bool IsBusy(Container container) {
+            if (container.IsInUse()) { return true; }
+            ZNetView nview = container.m_nview;
+            if (nview == null || !nview.IsValid()) { return true; }
+            return nview.GetZDO().GetInt(ZDOVars.s_inUse) == 1;
+        }
+
+        /// <summary>
         /// Removes up to <paramref name="amount"/> of <paramref name="name"/> across the pool and returns
         /// how many were actually taken (Epic Loot's inventory provider contract requires the count).
         /// </summary>
@@ -63,6 +67,9 @@ namespace DvergerAutomation {
             foreach (Container container in pool) {
                 if (amount <= 0) { break; }
                 if (container == null) { continue; }
+                // Never spend out of a chest someone has open: taking it over wrecks their session (see
+                // IsBusy). The aggregate skips the same chests, so availability never promises its stock.
+                if (IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null) { continue; }
 
@@ -130,49 +137,79 @@ namespace DvergerAutomation {
         }
     }
 
-    // ---- display counts: crafting panel + build HUD ---------------------------
-    // Both route through InventoryGui.SetupRequirement -> player.GetInventory().CountItems(name).
+    // ---- display: crafting panel + build HUD ---------------------------------
+    // Both draw each ingredient through the static InventoryGui.SetupRequirement, which prints the
+    // required amount and flashes it red when player.GetInventory().CountItems(name) falls short. The
+    // two prefixes below record which pool backs the panel being drawn; the SetupRequirement postfix
+    // then appends what that pool holds and lifts the red flash once inventory plus storage covers it.
+    //
+    // Deliberately not done by intercepting Inventory.CountItems for the duration of the panel: other
+    // mods print the player's own count on the same row from that call (MyLittleUI's "(N)"), and
+    // folding chest stock into it showed them the combined total with no way to tell the two apart.
 
     [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.SetupRequirementList))]
     internal static class InventoryGui_SetupRequirementList_Patch {
-        private static void Prefix() { CraftFromStoragePatches.InCraftRequirements++; }
+        private static void Prefix(Player player) {
+            CraftFromStoragePatches.DisplayPool = null;
+            if (player == null || player != Player.m_localPlayer) { return; }
+            // A null station (crafting by hand) resolves to the shared empty list.
+            CraftFromStoragePatches.DisplayPool = ContainerNetwork.GetContainersForStation(player.GetCurrentCraftingStation());
+        }
 
         [HarmonyPriority(Priority.Last)]
-        private static void Postfix() { CraftFromStoragePatches.InCraftRequirements--; }
+        private static void Postfix() { CraftFromStoragePatches.DisplayPool = null; }
     }
 
     [HarmonyPatch(typeof(Hud), nameof(Hud.SetupPieceInfo))]
     internal static class Hud_SetupPieceInfo_Patch {
-        private static void Prefix() { CraftFromStoragePatches.InBuildRequirements++; }
+        private static void Prefix() {
+            Player localPlayer = Player.m_localPlayer;
+            CraftFromStoragePatches.DisplayPool = localPlayer != null
+                ? ContainerNetwork.GetContainersNearPoint(localPlayer.transform.position)
+                : null;
+        }
 
         [HarmonyPriority(Priority.Last)]
-        private static void Postfix() { CraftFromStoragePatches.InBuildRequirements--; }
+        private static void Postfix() { CraftFromStoragePatches.DisplayPool = null; }
     }
 
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.CountItems))]
-    internal static class Inventory_CountItems_Patch {
-        private static void Postfix(Inventory __instance, ref int __result, string name, int quality) {
-            if (string.IsNullOrEmpty(name)) { return; }
-            Player localPlayer = Player.m_localPlayer;
-            if (localPlayer == null || __instance != localPlayer.m_inventory) { return; }
+    [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.SetupRequirement))]
+    internal static class InventoryGui_SetupRequirement_Patch {
+        // Low: mods that annotate this row with the player's own count (MyLittleUI) run at Normal and
+        // int.TryParse the text before touching it, so the storage figure has to land after theirs.
+        [HarmonyPriority(Priority.Low)]
+        private static void Postfix(Transform elementRoot, Piece.Requirement req, Player player, int quality, int craftMultiplier, bool __result) {
+            // False means the row was hidden (nothing required at this quality).
+            if (!__result) { return; }
+            List<Container> pool = CraftFromStoragePatches.DisplayPool;
+            if (pool == null || pool.Count == 0) { return; }
+            if (req == null || req.m_resItem == null) { return; }
+            if (player == null || player != Player.m_localPlayer) { return; }
 
-            List<Container> pool;
-            if (CraftFromStoragePatches.InCraftRequirements > 0) {
-                CraftingStation station = localPlayer.GetCurrentCraftingStation();
-                if (station == null) { return; }
-                pool = ContainerNetwork.GetContainersForStation(station);
-            } else if (CraftFromStoragePatches.InBuildRequirements > 0) {
-                pool = ContainerNetwork.GetContainersNearPoint(localPlayer.transform.position);
-            } else {
-                return;
+            string name = req.m_resItem.m_itemData.m_shared.m_name;
+            int stored = ContainerNetwork.CountInPool(pool, name);
+            if (stored <= 0) { return; }
+
+            Transform amountTransform = elementRoot.Find("res_amount");
+            TMP_Text amountText = amountTransform != null ? amountTransform.GetComponent<TMP_Text>() : null;
+            if (amountText == null) { return; }
+
+            // Vanilla judged the red flash on the player's own count alone. Storage covering the rest
+            // should read as craftable, the same way the craft button already does.
+            int needed = req.GetAmount(quality) * craftMultiplier;
+            if (player.GetInventory().CountItems(name) + stored >= needed) {
+                amountText.color = Color.white;
             }
 
-            if (pool.Count == 0) { return; }
-            // The display/availability path always queries quality-agnostic (-1); serve it from the
-            // frame-memoized aggregate. Fall back to a live scan for any specific-quality caller.
-            __result += quality < 0
-                ? ContainerNetwork.CountInPool(pool, name)
-                : CraftFromStoragePatches.SumContainers(pool, name, quality);
+            if (!ValConfig.ShowStorageCounts.Value) { return; }
+            amountText.text += " <color=" + CraftFromStoragePatches.StorageCountColor + ">+" + stored + "</color>";
+
+            // Vanilla resets the tooltip to the bare item name every draw, so this never accumulates.
+            UITooltip tooltip = elementRoot.GetComponent<UITooltip>();
+            if (tooltip != null) {
+                tooltip.m_text += "\n<color=" + CraftFromStoragePatches.StorageCountColor + ">"
+                    + Localization.instance.Localize("$DA_storage_count", stored.ToString()) + "</color>";
+            }
         }
     }
 

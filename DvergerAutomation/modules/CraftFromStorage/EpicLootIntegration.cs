@@ -120,7 +120,7 @@ namespace DvergerAutomation {
 
             ItemsResult.Clear();
             foreach (Container container in Pool()) {
-                if (container == null) { continue; }
+                if (container == null || CraftFromStoragePatches.IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null) { continue; }
                 ItemsResult.AddRange(inv.GetAllItems());
@@ -143,7 +143,7 @@ namespace DvergerAutomation {
         private static int RemoveExactItem(ItemDrop.ItemData item, int amount) {
             if (item == null || amount <= 0) { return 0; }
             foreach (Container container in Pool()) {
-                if (container == null) { continue; }
+                if (container == null || CraftFromStoragePatches.IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null || !inv.ContainsItem(item)) { continue; }
 

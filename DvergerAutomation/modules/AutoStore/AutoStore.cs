@@ -5,8 +5,8 @@ namespace DvergerAutomation {
     /// <summary>
     /// The AutoSorter's deposit box: the StoreGoods child of the DA_Autosorter piece is a vanilla
     /// <see cref="Container"/> the player drops goods into. Closing it distributes each stack into the
-    /// hub's linked chests that already hold a matching item, and hands back whatever has no home -
-    /// the box is a transit buffer, never storage.
+    /// hub's linked chests that already hold a matching item. Whatever has no home stays in the box
+    /// and is tried again on the next close.
     ///
     /// The close is detected by the Harmony patches in AutoStorePatches.
     /// </summary>
@@ -51,7 +51,7 @@ namespace DvergerAutomation {
         /// Applies the configured size to a deposit box, but never shrinks its grid past what it already
         /// holds: a narrower grid does not hide the items in the cut-off columns, it deletes them the next
         /// time the box loads (see <see cref="Container_Load_Patch"/>). A box grown to fit its contents
-        /// snaps back to the configured size once it is emptied - which a sort always does.
+        /// snaps back to the configured size once the items holding it open are sorted or taken out.
         /// </summary>
         internal static void ApplySize(Container box) {
             if (box == null) { return; }
@@ -155,8 +155,8 @@ namespace DvergerAutomation {
         // ---- sorting --------------------------------------------------------
 
         /// <summary>
-        /// Distributes the deposit box's contents into the hub's linked chests, then hands back anything
-        /// left over. Local-player only: it runs off the inventory UI closing.
+        /// Distributes the deposit box's contents into the hub's linked chests. Anything left over stays
+        /// put in the box. Local-player only: it runs off the inventory UI closing.
         /// </summary>
         internal static void Sort(AutomationHub hub, Player player) {
             if (hub == null || hub.DepositBox == null) { return; }
@@ -196,7 +196,7 @@ namespace DvergerAutomation {
                     // cannot quietly start admitting them.
                     if (target.m_privacy != Container.PrivacySetting.Public) { continue; }
                     Inventory dst = target.GetInventory();
-                    if (dst == null || IsBusy(target)) { continue; }
+                    if (dst == null || CraftFromStoragePatches.IsBusy(target)) { continue; }
                     if (!HasMatching(dst, item)) { continue; }
 
                     // Checked before claiming, so a chest with no room does not get its ZDO ownership
@@ -219,12 +219,14 @@ namespace DvergerAutomation {
                 // Chest contents changed outside a membership rebuild.
                 ContainerNetwork.InvalidateItemCounts();
             }
-            if (ValConfig.EnableDebugMode.Value) {
-                Logger.LogInfo($"[AutoStore] stored {stored} items across {usedChests.Count} chests, {src.NrOfItems()} stacks left over.");
-            }
 
-            int returned = Eject(hub, player);
-            Report(player, stored, usedChests.Count, returned);
+            // Leftovers stay in the box rather than being handed back. The old hand-back (into the
+            // player's pack, then onto the ground) duplicated items, and simply not moving them cannot.
+            int leftover = src.CountItems(null, -1, matchWorldLevel: false);
+            if (ValConfig.EnableDebugMode.Value) {
+                Logger.LogInfo($"[AutoStore] stored {stored} items across {usedChests.Count} chests, {leftover} left in the box.");
+            }
+            Report(player, stored, usedChests.Count, leftover);
         }
 
         /// <summary>
@@ -257,20 +259,6 @@ namespace DvergerAutomation {
             return landed;
         }
 
-        /// <summary>
-        /// True when a chest should be left alone because someone has it open. Claiming ownership out from
-        /// under them blanks their container panel, and their <c>m_inUse</c> can then never clear, because
-        /// <c>Container.SetInUse</c> is itself owner-gated. <c>IsInUse()</c> only reports the *local*
-        /// field, so a remote player's session is visible only through the flag the owner mirrors into
-        /// the ZDO.
-        /// </summary>
-        private static bool IsBusy(Container container) {
-            if (container.IsInUse()) { return true; }
-            ZNetView nview = container.m_nview;
-            if (nview == null || !nview.IsValid()) { return true; }
-            return nview.GetZDO().GetInt(ZDOVars.s_inUse) == 1;
-        }
-
         /// <summary>True when the chest already holds an item that would stack with this one.</summary>
         private static bool HasMatching(Inventory inv, ItemDrop.ItemData item) {
             foreach (ItemDrop.ItemData have in inv.GetAllItems()) {
@@ -299,58 +287,16 @@ namespace DvergerAutomation {
             return space;
         }
 
-        // ---- leftovers ------------------------------------------------------
-
-        // Anything the chests could not take goes back to the player, and onto the ground if their pack is
-        // full too. Returns how many items were handed back.
-        private static int Eject(AutomationHub hub, Player player) {
-            Inventory src = hub.DepositBox.GetInventory();
-            if (src.NrOfItems() == 0) { return 0; }
-
-            // Push out from the piece through the deposit face, so this does not depend on which way the
-            // StoreGoods child happens to be offset.
-            Vector3 face = hub.DepositBox.transform.position;
-            Vector3 outward = face - hub.transform.position;
-            outward = outward.sqrMagnitude > 0.0001f ? outward.normalized : hub.transform.forward;
-            Vector3 dropAt = face + outward * 0.5f + Vector3.up * 0.3f;
-
-            Inventory pack = player != null ? player.GetInventory() : null;
-            int returned = 0;
-
-            foreach (ItemDrop.ItemData item in new List<ItemDrop.ItemData>(src.GetAllItems())) {
-                if (item == null || item.m_stack <= 0) { continue; }
-
-                // Measured, not trusted: CanAddItem answers from FindFreeStackSpace, which ignores
-                // quality and so over-reports for gear, and AddItem can merge part of a stack and still
-                // report failure. Dropping the original stack after a partial merge would duplicate it.
-                if (pack != null) {
-                    int taken = MoveMeasured(src, item, pack, item.m_stack);
-                    returned += taken;
-                    if (item.m_stack <= 0) { continue; }
-                }
-
-                // Whatever the pack would not take goes on the ground. Same call Container.DropAllItems
-                // uses, so m_dropPrefab is reliably populated for inventory items.
-                int remainder = item.m_stack;
-                ItemDrop.DropItem(item, remainder,
-                    dropAt + Random.insideUnitSphere * 0.2f,
-                    Quaternion.Euler(0f, Random.Range(0, 360), 0f));
-                src.RemoveItem(item, remainder);
-                returned += remainder;
-            }
-            return returned;
-        }
-
         // One centre message: a second would just overwrite the first.
-        private static void Report(Player player, int stored, int chests, int returned) {
+        private static void Report(Player player, int stored, int chests, int leftover) {
             if (player == null) { return; }
-            if (stored > 0 && returned > 0) {
+            if (stored > 0 && leftover > 0) {
                 player.Message(MessageHud.MessageType.Center, Localization.instance.Localize(
-                    "$DA_Sorted_partial", stored.ToString(), chests.ToString(), returned.ToString()));
+                    "$DA_Sorted_partial", stored.ToString(), chests.ToString(), leftover.ToString()));
             } else if (stored > 0) {
                 player.Message(MessageHud.MessageType.Center, Localization.instance.Localize(
                     "$DA_Sorted_items", stored.ToString(), chests.ToString()));
-            } else if (returned > 0) {
+            } else if (leftover > 0) {
                 player.Message(MessageHud.MessageType.Center, "$DA_Sort_nothing");
             }
         }

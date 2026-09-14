@@ -33,7 +33,7 @@ namespace DvergerAutomation {
             }
 
             // Picks up a size change that was held back while the panel was open, and lets a box that grew
-            // to fit its contents shrink back now that the sort has emptied it.
+            // to fit its contents shrink back if the sort moved out what was holding it open.
             AutoStore.ApplySize(container);
         }
     }

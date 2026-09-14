@@ -5,6 +5,7 @@
   "DA_Need_Core": "You need a Surtling Core",
   "DA_store_goods_name": "Sorting Input",
   "DA_Sorted_items": "Stored $1 items in $2 chests",
-  "DA_Sorted_partial": "Stored $1 items in $2 chests, $3 had nowhere to go",
-  "DA_Sort_nothing": "No matching chests in range"
+  "DA_Sorted_partial": "Stored $1 items in $2 chests, $3 left in the box",
+  "DA_Sort_nothing": "No matching chests in range",
+  "DA_storage_count": "$1 in linked chests"
 }
