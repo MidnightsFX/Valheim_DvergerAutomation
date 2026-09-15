@@ -1,3 +1,11 @@
+**0.7.1**
+
+- Fixed: gear whose recipe has a Valheim 1.0 upgrader ingredient could not be crafted or upgraded
+  from linked chests - the craft button stayed greyed out even though the chests held everything
+  the panel listed.
+- Fixed: crafting that gear at a regular station could spend its upgrader ingredient out of a
+  linked chest, although the station never charges it.
+
 **0.7.0**
 
 - Ingredient rows in the crafting panel and the build HUD now show how many of each material the

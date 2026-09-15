@@ -34,6 +34,17 @@ namespace DvergerAutomation {
             return !EpicLootIntegration.IsProtectedItem(item);
         }
 
+        /// <summary>
+        /// Whether a recipe ingredient is charged at this station, mirroring vanilla's filter in
+        /// <c>Player.HaveRequirementItems</c> / <c>ConsumeResources</c>. Since 1.0 a recipe can carry upgrader
+        /// resources: they are the only ingredients at an upgrader station and are ignored everywhere else.
+        /// Their <c>GetAmount</c> is never 0, so skipping this demands (and spends) an item vanilla never asks for.
+        /// </summary>
+        internal static bool AppliesAtStation(Piece.Requirement requirement, CraftingStation station) {
+            if (requirement == null || requirement.m_resItem == null) { return false; }
+            return station != null ? station.m_upgrader == requirement.m_upgraderResource : !requirement.m_upgraderResource;
+        }
+
         // Claims ownership before mutating a chest we do not own, so Container.OnContainerChanged -> Save
         // actually persists and syncs the change.
         internal static void ClaimOwnership(Container container) {
@@ -114,7 +125,7 @@ namespace DvergerAutomation {
 
             bool requireOne = piece.m_requireOnlyOneIngredient;
             foreach (Piece.Requirement resource in piece.m_resources) {
-                if (resource.m_resItem == null) { continue; }
+                if (!CraftFromStoragePatches.AppliesAtStation(resource, station)) { continue; }
                 string name = resource.m_resItem.m_itemData.m_shared.m_name;
                 int needed = resource.GetAmount(qualityLevel) * amount;
 
@@ -258,7 +269,7 @@ namespace DvergerAutomation {
             if (pool.Count == 0) { return; }
 
             foreach (Piece.Requirement requirement in requirements) {
-                if (requirement.m_resItem == null) { continue; }
+                if (!CraftFromStoragePatches.AppliesAtStation(requirement, station)) { continue; }
                 int amount = requirement.GetAmount(qualityLevel) * multiplier;
                 if (amount <= 0) { continue; }
                 string name = requirement.m_resItem.m_itemData.m_shared.m_name;
