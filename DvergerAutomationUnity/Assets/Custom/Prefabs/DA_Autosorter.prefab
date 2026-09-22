@@ -847,7 +847,7 @@ MonoBehaviour:
   m_ashDamageImmune: 0
   m_ashDamageResist: 0
   m_burnable: 1
-  m_materialType: 1
+  m_materialType: 2
   m_supports: 1
   m_comOffset: {x: 0, y: 0, z: 0}
   m_forceCorrectCOMCalculation: 0

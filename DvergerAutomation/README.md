@@ -29,6 +29,16 @@ box are left out. Turn it off with `Show Storage Counts` if you would rather kee
 
 Your own inventory is always spent first; only the shortfall is drawn from storage.
 
+**The switch.** A button with the Autosorter's icon hangs off the left edge of the crafting panel,
+above the repair button - and off the top-right corner of the Epic Loot enchanting window. It lights
+up while storage is in play; click it and crafting, upgrading, Hammer building and enchanting go back
+to counting only what you are carrying, exactly as if no Autosorter were in range. Useful when you
+want to spend a specific stack, or to see what you can actually make on the road.
+
+This is a **client-side preference**: it changes nothing for anyone else on the server, and it
+persists in the config file as `Craft From Storage`, so the F1 menu and the in-game button are two
+views of the same setting.
+
 ### Auto-store: dump a haul, walk away
 
 The Autosorter has a **deposit box** on its front face. Open it, drop in whatever you came home
@@ -49,6 +59,35 @@ with, and close it - each stack is filed into the chests in range that **already
 
 Items sitting in the deposit box are deliberately **not** counted as crafting stock - the box is an
 inbox, not storage, and anything in it is either about to be filed away or waiting for a home.
+
+### Deposit All: empty your pack in one press
+
+Open the deposit box and a **Deposit All** button takes over the slot vanilla's *Place stacks* button
+sits in. One press moves your pack into the box and files it away immediately - no closing the box,
+no dragging stacks. *Place stacks* comes straight back on any ordinary chest.
+
+What it never takes:
+
+- **Equipped** gear.
+- Your **hotbar** - the whole bottom row, whatever is in it.
+- **Quick slots and equipment slots** added by EquipmentAndQuickSlots. That mod keeps its slots in
+  the same grid as your backpack, so they are excluded by asking it which cells are its own; other
+  slot mods are not recognised yet.
+- **Enchanted gear**, unless `Sort Magic Items` is on - the same rule the sort itself follows, so a
+  legendary is never moved somewhere the sort would then refuse to file it.
+- **Food**, if you leave `Deposit All Keeps Food` on. Food is a property rather than an item type -
+  anything that fills a food slot - which is why it stays its own switch.
+- Anything whose **item type** is in `Deposit All Ignored Types`. That defaults to gear and ammo;
+  clear the entry to deposit every type, or add to it to hold more back.
+
+The Hopper gets the same button, labelled **Deposit Materials**. It moves only what the Hopper's
+stations actually consume: the prefabs listed in `Hopper Deposit Items`, which defaults to the wood a
+charcoal kiln burns and every ore a smelter or blast furnace melts. Add `Coal` to hand it fuel
+directly, or `Barley`, `Flax` and `Softtissue` for the windmill, spinning wheel and eitr refinery.
+Unlike the deposit box, it does **not** spare your hotbar - only equipped items are left alone.
+
+Everything it did take is then sorted exactly as closing the box would sort it, and you get one
+message saying how much went out and how much is still sitting in the box.
 
 ### Surtling Core slots
 
@@ -130,6 +169,10 @@ Settings live under `BepInEx/config/MidngightsFX.DvergerAutomation.cfg`.
 | `Deposit Box Height` | `4` | 2-8 | Rows in the deposit box. Extra rows scroll. |
 | `Scan Interval` | `30` | 5-300 | Seconds between scans. Lower reacts to new chests sooner and costs more. |
 | `Show Storage Counts` | `true` | | Shows the green `+N` storage figure next to each ingredient. Client-side. |
+| `Craft From Storage` | `true` | | Whether linked chests are spent from at all. Client-side, and what the button on the crafting panel toggles. |
+| `Deposit All Keeps Food` | `true` | | Deposit All leaves food in your pack. Client-side. Meads and other potions are not food and are deposited. |
+| `Deposit All Ignored Types` | gear and ammo | | Item types Deposit All leaves in your pack at the deposit box, comma separated. Client-side. |
+| `Hopper Deposit Items` | wood and ores | | Item prefabs Deposit All moves into the Hopper, comma separated. Client-side. |
 | `EnableDebugMode` | `false` | | Verbose logging. Client-side, and hidden behind Advanced. |
 
 Inserting or removing a core relinks immediately rather than waiting for the next scan.

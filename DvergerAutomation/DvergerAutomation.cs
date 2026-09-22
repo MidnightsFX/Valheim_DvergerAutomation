@@ -16,12 +16,17 @@ namespace DvergerAutomation
     // Soft: Epic Loot is optional, but when it is installed it has to be loaded before Awake runs here,
     // or the reflection-bound API cannot resolve its assembly yet and the provider silently never registers.
     [BepInDependency(EpicLootIntegration.EpicLootGUID, BepInDependency.DependencyFlags.SoftDependency)]
+    // Soft, and for the same reason: Deposit All asks EquipmentAndQuickSlots which grid cells are its
+    // slots so it never empties one, and the reflection shim can only answer once that assembly is loaded.
+    [BepInDependency(EquipmentAndQuickSlotsGUID, BepInDependency.DependencyFlags.SoftDependency)]
     [NetworkCompatibility(CompatibilityLevel.EveryoneMustHaveMod, VersionStrictness.Minor)]
     internal class DvergerAutomation : BaseUnityPlugin
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "0.7.1";
+        public const string PluginVersion = "0.8.0";
+        /// <summary>EquipmentAndQuickSlots' BepInEx plugin GUID, used for the soft dependency that orders load.</summary>
+        internal const string EquipmentAndQuickSlotsGUID = "randyknapp.mods.equipmentandquickslots";
 
         internal static ManualLogSource Log;
         internal ValConfig cfg;
@@ -41,6 +46,9 @@ namespace DvergerAutomation
             // Container.Awake reads those fields to build its inventory and bind its network view.
             // LoadAsset hands back a cached instance, so this is the same object AddPieces then registers.
             AutoStore.ConfigureDepositPrefab(EmbeddedResourceBundle.LoadAsset<GameObject>("DA_Autosorter.prefab"));
+            // Same deal for the hopper's single shared store. Null until the rebuilt bundle carries the
+            // piece, which ConfigurePrefab reports rather than throwing.
+            HopperStore.ConfigurePrefab(EmbeddedResourceBundle.LoadAsset<GameObject>("DA_ForgeHopper.prefab"));
 
             HarmonyInstance = Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), harmonyInstanceId: PluginGUID);
 
@@ -68,6 +76,20 @@ namespace DvergerAutomation
                 { new JotunnPiece.PieceCost() { prefab = "Ectoplasm", amount = 4, refundable = true } }
             };
             JotunnPiece.RegisterJotunnPiece(DA_AutSorter);
+
+            JotunnPiece.JotunnBuildPiece DA_Hopper = new JotunnPiece.JotunnBuildPiece();
+            DA_Hopper.Name = "Dverger Hopper";
+            DA_Hopper.Prefab = "DA_ForgeHopper";
+            DA_Hopper.Sprite = "DA_ForgeHopper";
+            DA_Hopper.Workbench = "forge";
+            DA_Hopper.Category = "Crafting";
+            DA_Hopper.PieceCost = new List<JotunnPiece.PieceCost>() {
+                { new JotunnPiece.PieceCost() { prefab = "Stone", amount = 30, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Iron", amount = 12, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Bronze", amount = 8, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Coal", amount = 20, refundable = true } }
+            };
+            JotunnPiece.RegisterJotunnPiece(DA_Hopper);
         }
     }
 }

@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.Reflection;
+using HarmonyLib;
 using UnityEngine;
 
 namespace DvergerAutomation {
@@ -44,6 +47,7 @@ namespace DvergerAutomation {
 
             if (Active) {
                 Logger.LogInfo($"[Autosorter] Registered inventory provider with Epic Loot {EpicLootAPI.EpicLoot.GetPluginVersion()}.");
+                HookEnchantingUI();
             } else {
                 Logger.LogWarning("[Autosorter] Epic Loot is present but refused the inventory provider registration.");
             }
@@ -51,8 +55,91 @@ namespace DvergerAutomation {
 
         internal static void Unregister() {
             if (!Active) { return; }
+            UnhookEnchantingUI();
             EpicLootAPI.EpicLoot.UnregisterInventoryProvider(DvergerAutomation.PluginGUID);
             Active = false;
+        }
+
+        // ---- enchanting table window ---------------------------------------------
+
+        // Epic Loot's UI lives in its own assembly (EpicLoot_UnityLib) that this mod deliberately does
+        // not reference - same reason the rest of the integration goes through the reflection-bound
+        // shim in common/EpicLootAPI. Harmony resolves the type by name across loaded assemblies, so
+        // the window can still be patched without a compile-time dependency, and every step below
+        // fails soft: with the type, method or field renamed the enchanting window simply shows no
+        // switch, while the provider that feeds it keeps working.
+        private static MethodInfo enchantingShow;
+        private static MethodInfo enchantingInstance;
+        private static MethodInfo enchantingSourceTable;
+        private static FieldInfo enchantingRoot;
+
+        private static void HookEnchantingUI() {
+            try {
+                Type uiType = AccessTools.TypeByName("EpicLoot_UnityLib.EnchantingTableUI");
+                if (uiType == null) {
+                    Logger.LogWarning("[Autosorter] Epic Loot's EnchantingTableUI was not found; no craft-from-storage switch on the enchanting window.");
+                    return;
+                }
+
+                enchantingShow = AccessTools.Method(uiType, "Show");
+                enchantingInstance = AccessTools.PropertyGetter(uiType, "instance");
+                enchantingSourceTable = AccessTools.PropertyGetter(uiType, "SourceTable");
+                enchantingRoot = AccessTools.Field(uiType, "Root");
+                if (enchantingShow == null || enchantingInstance == null || enchantingSourceTable == null || enchantingRoot == null) {
+                    Logger.LogWarning("[Autosorter] Epic Loot's EnchantingTableUI does not look the way this mod expects; no craft-from-storage switch on the enchanting window.");
+                    enchantingShow = null;
+                    return;
+                }
+
+                DvergerAutomation.HarmonyInstance.Patch(
+                    enchantingShow,
+                    postfix: new HarmonyMethod(AccessTools.Method(typeof(EpicLootIntegration), nameof(OnEnchantingUIShown))));
+            } catch (Exception ex) {
+                enchantingShow = null;
+                Logger.LogWarning($"[Autosorter] Could not hook Epic Loot's enchanting window: {ex.Message}");
+            }
+        }
+
+        private static void UnhookEnchantingUI() {
+            if (enchantingShow == null) { return; }
+            DvergerAutomation.HarmonyInstance.Unpatch(enchantingShow, HarmonyPatchType.Postfix, DvergerAutomation.PluginGUID);
+            enchantingShow = null;
+        }
+
+        /// <summary>
+        /// Adds (or repaints) the craft-from-storage switch each time the enchanting window opens.
+        /// Idempotent, because Epic Loot creates the window once and re-shows that same object.
+        /// </summary>
+        private static void OnEnchantingUIShown() {
+            object ui = enchantingInstance.Invoke(null, null);
+            if (ui == null) { return; }
+            // Root is the window's 1120x700 "Panel" object, not the full-screen wrapper - the scrim
+            // beside it is toggled separately.
+            CraftFromStorageToggle.AttachToEnchantingPanel(enchantingRoot.GetValue(ui) as GameObject);
+        }
+
+        /// <summary>
+        /// Rebuilds an open enchanting window after the local craft-from-storage switch was flipped.
+        /// Epic Loot's panels list the items they can act on only when something reselects, so without
+        /// this the table keeps offering chest items the provider has just stopped serving - and a
+        /// selection already made on one of them would be spent out of a pool that is now off limits.
+        /// Re-running Show is the same path Epic Loot uses when the window opens: it refreshes the
+        /// table and deselects every panel, which is exactly the cleanup needed here. No-op while the
+        /// window is closed, so an F1-menu change costs nothing.
+        /// </summary>
+        internal static void RefreshEnchantingWindow() {
+            if (enchantingShow == null) { return; }
+            try {
+                object ui = enchantingInstance.Invoke(null, null);
+                if (ui == null) { return; }
+                GameObject root = enchantingRoot.GetValue(ui) as GameObject;
+                if (root == null || !root.activeSelf) { return; }
+                object table = enchantingSourceTable.Invoke(ui, null);
+                if (table == null) { return; }
+                enchantingShow.Invoke(null, new[] { table });
+            } catch (Exception ex) {
+                Logger.LogWarning($"[Autosorter] Could not refresh Epic Loot's enchanting window: {ex.Message}");
+            }
         }
 
         /// <summary>

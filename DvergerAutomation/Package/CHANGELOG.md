@@ -1,3 +1,19 @@
+**0.8.0**
+
+- New piece: the **Dverger Hopper**
+	- Dverger Hopper is an iron age improvement that allows automating Furnances & Kilns
+	- It automatically fills machines in its radius (expandable with surtling cores) and provides a small speedup
+	- Its inventory will pull back in smelted ores, making them immediately available for crafting from any nearby autosorter
+	- Fully configurable, range, speed bonus, pice requirements, default scan rate
+- Craft-from-storage switch: A GUI button to enable/disable craft from containers
+- Deposit All button, which takes over the slot vanilla's *Place stacks* button sits in whenever one of the mod's own containers is open
+	- On the Autosorter it deposits your inventory and files it away, leaving equipped gear, the hotbar and quickslots alone
+	- Which item types it holds back is now a config list, defaulting to gear and ammo (this replaces the old `Deposit All Keeps Ammo` switch)
+	- On the Dverger Hopper it becomes **Deposit Materials** and moves in wood and ore, from a config list of prefabs
+	- Ordinary chests keep *Place stacks* exactly as before
+- Fixed: an Autosorter placed on a wooden floor lost its support and broke. It is now an iron piece,
+  so wood holds it up.
+
 **0.7.1**
 
 - Fixed: gear whose recipe has a Valheim 1.0 upgrader ingredient could not be crafted or upgraded

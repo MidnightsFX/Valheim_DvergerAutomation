@@ -154,14 +154,24 @@ namespace DvergerAutomation {
 
         // ---- sorting --------------------------------------------------------
 
+        /// <summary>What a <see cref="Sort"/> pass did, for a caller that reports it as part of a larger action.</summary>
+        internal struct SortResult {
+            internal int Stored;
+            internal int Chests;
+            internal int Leftover;
+        }
+
         /// <summary>
         /// Distributes the deposit box's contents into the hub's linked chests. Anything left over stays
-        /// put in the box. Local-player only: it runs off the inventory UI closing.
+        /// put in the box. Local-player only: it runs off the inventory UI closing, or off the Deposit All
+        /// button, which passes <paramref name="report"/> false so it can fold this into one message of
+        /// its own instead of having a second centre message overwrite it.
         /// </summary>
-        internal static void Sort(AutomationHub hub, Player player) {
-            if (hub == null || hub.DepositBox == null) { return; }
+        internal static SortResult Sort(AutomationHub hub, Player player, bool report = true) {
+            SortResult result = default;
+            if (hub == null || hub.DepositBox == null) { return result; }
             Inventory src = hub.DepositBox.GetInventory();
-            if (src == null || src.NrOfItems() == 0) { return; }
+            if (src == null || src.NrOfItems() == 0) { return result; }
 
             // Opening the box already made this client the ZDO owner (Container.RPC_RequestOpen does
             // SetOwner), but re-claim rather than assume: emptying the box on a non-owner never reaches
@@ -195,6 +205,11 @@ namespace DvergerAutomation {
                     // chests never reach the pool, but the rule is phrased as "Public or nothing" so it
                     // cannot quietly start admitting them.
                     if (target.m_privacy != Container.PrivacySetting.Public) { continue; }
+                    // A hopper's store is a working buffer, not storage: it already holds whatever its
+                    // smelters just produced, so it matches everything of that type and would soak up
+                    // the whole haul - and a full hopper stops collecting output. Crafting still counts
+                    // it (it is in the linked pool), it just never receives sorted goods.
+                    if (target.GetComponentInParent<HopperHub>() != null) { continue; }
                     Inventory dst = target.GetInventory();
                     if (dst == null || CraftFromStoragePatches.IsBusy(target)) { continue; }
                     if (!HasMatching(dst, item)) { continue; }
@@ -226,7 +241,12 @@ namespace DvergerAutomation {
             if (ValConfig.EnableDebugMode.Value) {
                 Logger.LogInfo($"[AutoStore] stored {stored} items across {usedChests.Count} chests, {leftover} left in the box.");
             }
-            Report(player, stored, usedChests.Count, leftover);
+            if (report) { Report(player, stored, usedChests.Count, leftover); }
+
+            result.Stored = stored;
+            result.Chests = usedChests.Count;
+            result.Leftover = leftover;
+            return result;
         }
 
         /// <summary>
@@ -239,7 +259,7 @@ namespace DvergerAutomation {
         /// stackables it merges into existing stacks as it goes and can still report failure, so trusting
         /// it would either strand units or remove more from the source than ever arrived.
         /// </summary>
-        private static int MoveMeasured(Inventory from, ItemDrop.ItemData item, Inventory to, int amount) {
+        internal static int MoveMeasured(Inventory from, ItemDrop.ItemData item, Inventory to, int amount) {
             amount = Mathf.Min(amount, Mathf.Min(item.m_stack, FreeSpaceFor(to, item)));
             if (amount <= 0) { return 0; }
 

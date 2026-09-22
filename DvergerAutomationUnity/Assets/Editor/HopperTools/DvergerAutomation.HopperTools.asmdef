@@ -1,0 +1,21 @@
+{
+    "name": "DvergerAutomation.HopperTools",
+    "rootNamespace": "",
+    "references": [],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "assembly_valheim.dll",
+        "DvergerAutomation.dll",
+        "BepInEx.dll",
+        "Jotunn.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

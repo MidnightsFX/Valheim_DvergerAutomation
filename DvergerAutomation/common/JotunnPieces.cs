@@ -93,6 +93,13 @@ namespace DvergerAutomation.Common {
 
             // Set asset references
             LGos.Prefab = DvergerAutomation.EmbeddedResourceBundle.LoadAsset<GameObject>($"{jbuildpiece.Prefab}.prefab");
+            // A piece whose prefab is not in the bundle yet (mid-development, or a bundle built before the
+            // piece existed) would otherwise reach CustomPiece with a null GameObject and take the whole
+            // plugin down in Awake. Skip it and say so instead.
+            if (LGos.Prefab == null) {
+                Logger.LogWarning($"{jbuildpiece.Name}: '{jbuildpiece.Prefab}.prefab' is not in the asset bundle; skipping this piece. Rebuild the bundle to enable it.");
+                return;
+            }
             LGos.Sprite = DvergerAutomation.EmbeddedResourceBundle.LoadAsset<Sprite>($"{jbuildpiece.Sprite}.png");
             jbuildpiece.Objs = LGos;
             jbuildpiece.Cfgs = new PieceConfigs();

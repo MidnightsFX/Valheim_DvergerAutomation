@@ -305,6 +305,10 @@ namespace DvergerAutomation {
         // Scratch set reused across RebuildStationCache to dedup a station's containers in O(1).
         private static readonly HashSet<Container> RebuildSeen = new HashSet<Container>();
 
+        // Also what both pool accessors hand back while the local player has craft-from-storage switched
+        // off: every consumer - the two Harmony display paths, the requirement checks, consumption, and
+        // Epic Loot's inventory provider - already treats an empty pool as "no autosorter here", so the
+        // client-side switch needs no separate test anywhere else.
         private static readonly List<Container> Empty = new List<Container>();
 
         // Frame-memoized aggregate of item-name -> total stack across a container pool. Crafting/build
@@ -371,6 +375,7 @@ namespace DvergerAutomation {
 
         /// <summary>Containers linked to the given crafting station (station-crafting pool). O(1) lookup.</summary>
         internal static List<Container> GetContainersForStation(CraftingStation station) {
+            if (!ValConfig.CraftFromStorageEnabled.Value) { return Empty; }
             if (station != null && StationToContainers.TryGetValue(station, out List<Container> list)) {
                 return list;
             }
@@ -383,6 +388,7 @@ namespace DvergerAutomation {
         /// per-frame build path neither reallocates nor re-dedups, and the aggregate memo can key on it.
         /// </summary>
         internal static List<Container> GetContainersNearPoint(Vector3 point) {
+            if (!ValConfig.CraftFromStorageEnabled.Value) { return Empty; }
             if (nearPointFrame == Time.frameCount && nearPointPos == point) {
                 return NearPointResult;
             }
