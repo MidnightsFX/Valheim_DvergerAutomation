@@ -23,6 +23,9 @@ Built with the Hammer, in the **Crafting** category, near a **Forge** (Rrequirem
 The autosorter can be upgraded with Surtling cores to increase its range. It has 4 core slots, and configurably requires at least 1 core to work.
 There is a front hopper on the machine that allows depositing items for it to store into chests. Items not sorted will be left in the inventory.
 
+Carts and boats in range count as storage too, so you can craft straight out of the cart you just pulled up to the workshop. 
+They are only ever crafted from, never sorted into, and each can be turned off (`Craft From Carts`, `Craft From Boats`).
+
 
 
 ### Furnace Hopper - Automate your Furnanaces and Kilns

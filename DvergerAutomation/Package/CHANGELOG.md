@@ -1,3 +1,15 @@
+**0.9.0**
+
+- Carts and boats (Karve, Longship, Drakkar) within an Autosorter's range now count as storage for
+  crafting and Hammer building. They are relinked every couple of seconds, so a cart counts as soon
+  as it is parked and stops counting when it leaves.
+	- A boat with someone else aboard, or a cart someone else is pulling or riding, is left alone
+	- Auto-store never stores items into a boat or cart
+	- New server settings `Craft From Boats` and `Craft From Carts`, both on by default
+- Fixed: with ZenUI's crafting panel enabled, the craft-from-storage switch sat too low, off its
+  plate and overlapping the repair button. It now stacks above the repair button wherever a UI mod
+  puts it.
+
 **0.8.0**
 
 - New piece: the **Dverger Hopper**

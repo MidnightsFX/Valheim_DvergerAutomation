@@ -50,17 +50,59 @@ namespace DvergerAutomation {
         /// <summary>
         /// Hangs the switch off the left edge of the vanilla crafting panel, above the repair button -
         /// the one place vanilla itself floats a control outside this panel, so it reads as native.
-        /// Same anchor and x as the prefab's RepairButton (0, 0.5 / x -37) and the same 72px pitch, so
-        /// the two read as one column. That puts its lower edge flush against the top of RepairSimple,
-        /// the decorative plate the repair button sits in, and clear of everything inside the panel -
-        /// the station icon and recipe list both start at positive x, and this sits entirely outside.
+        /// One 72px pitch above the repair button, so the two read as one column. That puts its lower
+        /// edge flush against the top of RepairSimple, the decorative plate the repair button sits in,
+        /// and clear of everything inside the panel - the station icon and recipe list both start at
+        /// positive x, and this sits entirely outside.
+        ///
+        /// The numbers passed here are the prefab's own (RepairButton at 0, 0.5 / -37, 167) and only
+        /// stand in until <see cref="AlignToRepairColumn"/> copies the live button, which is what keeps
+        /// the column intact when another mod has moved it.
         /// </summary>
         internal static void AttachToCraftingPanel(InventoryGui gui) {
             if (gui == null || gui.m_crafting == null) { return; }
             AttachBackdrop(gui);
             Attach(gui.m_crafting, new Vector2(0f, 0.5f), new Vector2(0.5f, 0.5f),
                    new Vector2(-37f, 167f + ButtonPitch));
+            AlignToRepairColumn(gui);
             RefreshBackdrop();
+        }
+
+        /// <summary>
+        /// Stacks the switch and its plate one pitch above the repair button and its plate, read off
+        /// the live objects rather than the prefab's numbers.
+        ///
+        /// The two halves of that column are anchored differently - the button to the panel's vertical
+        /// middle, the plate to its top edge - so a mod that changes the panel's height moves one and
+        /// not the other, and has to re-seat the button by hand to keep it on its plate. ZenUI does
+        /// exactly that: its crafting grid grows the panel from 650 to 685 at Game.Start and, from an
+        /// InventoryGui.Awake prefix, moves the button to y 185.5 to compensate. Taking the button's
+        /// own anchors and adding the pitch inherits that correction. On the prefab's numbers the
+        /// switch rode the resize down 17.5px, off its plate and 10px into the repair button.
+        ///
+        /// Run at Awake and again on every Show, so a mod that moves the button later than ZenUI does
+        /// is followed too. Each half is only followed while its template is a direct child of the
+        /// panel: a UI overhaul that reparents one has put it in a different coordinate space, and the
+        /// prefab's numbers are the safer guess there.
+        /// </summary>
+        internal static void AlignToRepairColumn(InventoryGui gui) {
+            if (gui == null || gui.m_crafting == null) { return; }
+            Vector2 pitch = new Vector2(0f, ButtonPitch);
+
+            Transform toggle = gui.m_crafting.Find(ObjectName);
+            RectTransform button = gui.m_repairButton != null ? gui.m_repairButton.transform as RectTransform : null;
+            if (toggle != null && button != null && button.parent == gui.m_crafting) {
+                RectTransform rect = (RectTransform)toggle;
+                rect.anchorMin = button.anchorMin;
+                rect.anchorMax = button.anchorMax;
+                rect.pivot = button.pivot;
+                rect.anchoredPosition = button.anchoredPosition + pitch;
+            }
+
+            RectTransform plate = gui.m_repairPanel as RectTransform;
+            if (backdrop != null && plate != null && plate.parent == gui.m_crafting) {
+                ((RectTransform)backdrop.transform).anchoredPosition = plate.anchoredPosition + pitch;
+            }
         }
 
         /// <summary>
@@ -334,9 +376,11 @@ namespace DvergerAutomation {
 
     [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.Show))]
     internal static class InventoryGui_Show_StorageToggle_Patch {
-        // Belt and braces for the one input SettingChanged does not cover: an admin config sync that
-        // lands while the panel is closed. Once per open, so nothing per-frame rides on it.
-        private static void Postfix() {
+        // Belt and braces for the two inputs nothing else covers: an admin config sync that lands while
+        // the panel is closed, and a mod that moves the repair button after Awake. Once per open, so
+        // nothing per-frame rides on it.
+        private static void Postfix(InventoryGui __instance) {
+            CraftFromStorageToggle.AlignToRepairColumn(__instance);
             CraftFromStorageToggle.RefreshAll();
         }
     }

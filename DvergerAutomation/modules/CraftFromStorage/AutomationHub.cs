@@ -36,6 +36,13 @@ namespace DvergerAutomation {
         internal readonly HashSet<CraftingStation> LinkedStations = new HashSet<CraftingStation>();
         internal readonly List<Container> LinkedContainers = new List<Container>();
 
+        // The boat holds and cart beds among LinkedContainers, mapped to the vehicle carrying each (see
+        // VehicleStorage). Vehicles come and go far faster than chests get built, so they are relinked on
+        // a short cycle of their own rather than waiting out the chest scan.
+        internal readonly Dictionary<Container, MonoBehaviour> LinkedVehicles = new Dictionary<Container, MonoBehaviour>();
+        private readonly Dictionary<Container, MonoBehaviour> vehicleScratch = new Dictionary<Container, MonoBehaviour>();
+        private const float VehicleRelinkInterval = 2f;
+
         /// <summary>
         /// The piece's own deposit inventory (the StoreGoods child), into which the player drops goods
         /// for <see cref="AutoStore"/> to distribute. Resolved from the hierarchy rather than serialized
@@ -44,6 +51,7 @@ namespace DvergerAutomation {
         internal Container DepositBox { get; private set; }
 
         private Coroutine scanLoop;
+        private Coroutine vehicleLoop;
         private static int pieceMask = 0;
 
         private void Awake() {
@@ -73,6 +81,7 @@ namespace DvergerAutomation {
         private void OnEnable() {
             ContainerNetwork.Register(this);
             scanLoop = StartCoroutine(ScanLoopRoutine());
+            vehicleLoop = StartCoroutine(VehicleLoopRoutine());
         }
 
         private void OnDisable() {
@@ -80,8 +89,13 @@ namespace DvergerAutomation {
                 StopCoroutine(scanLoop);
                 scanLoop = null;
             }
+            if (vehicleLoop != null) {
+                StopCoroutine(vehicleLoop);
+                vehicleLoop = null;
+            }
             LinkedStations.Clear();
             LinkedContainers.Clear();
+            LinkedVehicles.Clear();
             ContainerNetwork.Unregister(this);
         }
 
@@ -100,9 +114,29 @@ namespace DvergerAutomation {
             }
         }
 
+        // A cart pulled up to the workshop should count within moments, not after the next chest scan,
+        // and one pulled away should stop counting just as quickly. Cheap: it only walks the loaded
+        // boats and carts, and rebuilds the station cache only when the set actually changed.
+        private IEnumerator VehicleLoopRoutine() {
+            yield return new WaitForSeconds(2f);
+            while (true) {
+                yield return new WaitForSeconds(VehicleRelinkInterval);
+                if (ValConfig.AutomationEnabled.Value && Player.m_localPlayer != null) {
+                    RelinkVehicles();
+                }
+            }
+        }
+
+        private static long LocalPlayerId() {
+            return (Game.instance != null && Game.instance.GetPlayerProfile() != null)
+                ? Game.instance.GetPlayerProfile().GetPlayerID()
+                : 0L;
+        }
+
         private void Scan() {
             LinkedStations.Clear();
             LinkedContainers.Clear();
+            LinkedVehicles.Clear();
 
             // Gated inactive: with no cores inserted the hub links nothing (feature off) when required.
             if (ValConfig.RequireCores.Value && CoreCount == 0) {
@@ -112,9 +146,7 @@ namespace DvergerAutomation {
 
             float radius = EffectiveRadius;
             Vector3 pos = transform.position;
-            long playerId = (Game.instance != null && Game.instance.GetPlayerProfile() != null)
-                ? Game.instance.GetPlayerProfile().GetPlayerID()
-                : 0L;
+            long playerId = LocalPlayerId();
 
             // Crafting stations: iterate the game's global station list and distance-check (no physics needed).
             foreach (CraftingStation station in CraftingStation.m_allStations) {
@@ -141,11 +173,44 @@ namespace DvergerAutomation {
                 }
             }
 
+            // After the chests, so crafting spends out of this hub's chests before a boat's or cart's load.
+            VehicleStorage.Collect(pos, radius, playerId, LinkedVehicles);
+            LinkedContainers.AddRange(LinkedVehicles.Keys);
+
             if (ValConfig.EnableDebugMode.Value) {
-                Logger.LogInfo($"[Autosorter] scan linked {LinkedStations.Count} stations, {LinkedContainers.Count} chests within {radius}m.");
+                Logger.LogInfo($"[Autosorter] scan linked {LinkedStations.Count} stations, {LinkedContainers.Count - LinkedVehicles.Count} chests, {LinkedVehicles.Count} boats/carts within {radius}m.");
             }
 
             ContainerNetwork.RebuildStationCache();
+        }
+
+        // The vehicle half of Scan on its own: swaps this hub's boat and cart links for whatever is in
+        // range right now, leaving its chests alone.
+        private void RelinkVehicles() {
+            vehicleScratch.Clear();
+            if (!ValConfig.RequireCores.Value || CoreCount > 0) {
+                VehicleStorage.Collect(transform.position, EffectiveRadius, LocalPlayerId(), vehicleScratch);
+            }
+            if (SameVehicles(vehicleScratch, LinkedVehicles)) { return; }
+
+            LinkedContainers.RemoveAll(container => LinkedVehicles.ContainsKey(container));
+            LinkedVehicles.Clear();
+            foreach (KeyValuePair<Container, MonoBehaviour> link in vehicleScratch) {
+                LinkedVehicles.Add(link.Key, link.Value);
+                LinkedContainers.Add(link.Key);
+            }
+            if (ValConfig.EnableDebugMode.Value) {
+                Logger.LogInfo($"[Autosorter] relinked {LinkedVehicles.Count} boats/carts.");
+            }
+            ContainerNetwork.RebuildStationCache();
+        }
+
+        private static bool SameVehicles(Dictionary<Container, MonoBehaviour> a, Dictionary<Container, MonoBehaviour> b) {
+            if (a.Count != b.Count) { return false; }
+            foreach (Container container in a.Keys) {
+                if (!b.ContainsKey(container)) { return false; }
+            }
+            return true;
         }
 
         /// <summary>
@@ -158,7 +223,7 @@ namespace DvergerAutomation {
 
         // A chest is usable only if the local player can freely access it: not Private/Group-locked to
         // someone else, and not inside a ward the player is not permitted in (the player's own ward passes).
-        private static bool IsAccessible(Container container, long playerId) {
+        internal static bool IsAccessible(Container container, long playerId) {
             if (container.m_inventory == null) { return false; } // Container.Awake not run yet.
             if (!container.CheckAccess(playerId)) { return false; }
             if (!PrivateArea.CheckAccess(container.transform.position, 0f, flash: false)) { return false; }
@@ -305,6 +370,11 @@ namespace DvergerAutomation {
         // Scratch set reused across RebuildStationCache to dedup a station's containers in O(1).
         private static readonly HashSet<Container> RebuildSeen = new HashSet<Container>();
 
+        // Every boat hold / cart bed any hub links, mapped to the vehicle carrying it. IsBusy asks this
+        // for every pooled container every frame, so it is kept alongside the station cache rather than
+        // worked out from the hierarchy on demand.
+        private static readonly Dictionary<Container, MonoBehaviour> Carriers = new Dictionary<Container, MonoBehaviour>();
+
         // Also what both pool accessors hand back while the local player has craft-from-storage switched
         // off: every consumer - the two Harmony display paths, the requirement checks, consumption, and
         // Epic Loot's inventory provider - already treats an empty pool as "no autosorter here", so the
@@ -338,8 +408,12 @@ namespace DvergerAutomation {
 
         internal static void RebuildStationCache() {
             StationToContainers.Clear();
+            Carriers.Clear();
             foreach (AutomationHub hub in Hubs) {
                 if (hub == null) { continue; }
+                foreach (KeyValuePair<Container, MonoBehaviour> link in hub.LinkedVehicles) {
+                    Carriers[link.Key] = link.Value;
+                }
                 foreach (CraftingStation station in hub.LinkedStations) {
                     if (station == null) { continue; }
                     if (!StationToContainers.TryGetValue(station, out List<Container> list)) {
@@ -371,6 +445,11 @@ namespace DvergerAutomation {
             aggPool = null;
             // Epic Loot's enchanting table reads a memo of the same pool, on the same per-frame basis.
             EpicLootIntegration.InvalidateItemCache();
+        }
+
+        /// <summary>The boat or cart carrying a linked container; false for a plain chest.</summary>
+        internal static bool TryGetCarrier(Container container, out MonoBehaviour carrier) {
+            return Carriers.TryGetValue(container, out carrier);
         }
 
         /// <summary>Containers linked to the given crafting station (station-crafting pool). O(1) lookup.</summary>

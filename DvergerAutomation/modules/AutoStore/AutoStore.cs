@@ -210,6 +210,9 @@ namespace DvergerAutomation {
                     // the whole haul - and a full hopper stops collecting output. Crafting still counts
                     // it (it is in the linked pool), it just never receives sorted goods.
                     if (target.GetComponentInParent<HopperHub>() != null) { continue; }
+                    // Boats and carts lend to crafting only. They leave, and anything filed into one
+                    // would leave with them - a cart that happens to carry wood is not the wood chest.
+                    if (hub.LinkedVehicles.ContainsKey(target)) { continue; }
                     Inventory dst = target.GetInventory();
                     if (dst == null || CraftFromStoragePatches.IsBusy(target)) { continue; }
                     if (!HasMatching(dst, item)) { continue; }

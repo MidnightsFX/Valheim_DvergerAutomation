@@ -25,6 +25,8 @@ namespace DvergerAutomation {
         public static ConfigEntry<float> ScanRadius;
         public static ConfigEntry<float> RangePerCore;
         public static ConfigEntry<bool> RequireCores;
+        public static ConfigEntry<bool> CraftFromBoats;
+        public static ConfigEntry<bool> CraftFromCarts;
 
         // Dverger AutoSorter - "auto store" deposit box
         public static ConfigEntry<bool> AutoStoreEnabled;
@@ -99,6 +101,10 @@ namespace DvergerAutomation {
             ScanRadius = BindServerConfig("Dverger AutoSorter", "Scan Radius", 20f, "Radius (meters) around the AutoSorter in which crafting stations and chests are linked.", false, 1, 64);
             RangePerCore = BindServerConfig("Dverger AutoSorter", "Range Per Core", 25f, "Extra link radius (meters) added per inserted Surtling Core.", false, 0, 100);
             RequireCores = BindServerConfig("Dverger AutoSorter", "Require Cores", true, "When enabled, the AutoSorter only links stations/chests after at least one Surtling Core is inserted.");
+            // No SettingChanged hook needed: every hub relinks its boats and carts every couple of seconds,
+            // and a switched-off type simply stops turning up.
+            CraftFromBoats = BindServerConfig("Dverger AutoSorter", "Craft From Boats", true, "Links the storage of boats (Karve, Longship, Drakkar) within the AutoSorter's range, so their holds feed crafting and building like any linked chest. A boat is skipped while someone else is aboard. Boats never receive auto-stored items.");
+            CraftFromCarts = BindServerConfig("Dverger AutoSorter", "Craft From Carts", true, "Links carts within the AutoSorter's range, so their contents feed crafting and building like any linked chest. A cart is skipped while someone else is pulling or riding it. Carts never receive auto-stored items.");
             AutoStoreEnabled = BindServerConfig("Dverger AutoSorter", "Auto Store", true, "Enables the AutoSorter's deposit box: closing it distributes what you left inside into linked chests that already hold the same item. Anything with no home stays in the box.");
             SortMagicItems = BindServerConfig("Dverger AutoSorter", "Sort Magic Items", false, "When enabled, enchanted (Epic Loot) items are distributed like anything else. Off by default so a legendary is never filed away into a chest of ordinary gear.");
             // Defaults match the player's own inventory (Humanoid.m_inventory is a hard-coded 8x4), so one

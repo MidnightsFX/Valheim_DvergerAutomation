@@ -61,12 +61,17 @@ namespace DvergerAutomation {
         /// <c>Container.Load</c>, so their copy of the chest stops updating for good. <c>IsInUse()</c> only
         /// reports the *local* field, so a remote player's session is visible only through the flag the
         /// owner mirrors into the ZDO.
+        ///
+        /// A boat's hold or a cart's bed is also busy while someone else is aboard, pulling or riding it:
+        /// the hold shares the vehicle's ZDO, so claiming it takes the whole vehicle (see
+        /// <see cref="VehicleStorage.InUse"/>).
         /// </summary>
         internal static bool IsBusy(Container container) {
             if (container.IsInUse()) { return true; }
             ZNetView nview = container.m_nview;
             if (nview == null || !nview.IsValid()) { return true; }
-            return nview.GetZDO().GetInt(ZDOVars.s_inUse) == 1;
+            if (nview.GetZDO().GetInt(ZDOVars.s_inUse) == 1) { return true; }
+            return VehicleStorage.InUse(container);
         }
 
         /// <summary>
