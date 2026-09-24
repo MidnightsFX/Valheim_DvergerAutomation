@@ -24,7 +24,7 @@ namespace DvergerAutomation
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "0.8.0";
+        public const string PluginVersion = "0.9.0";
         /// <summary>EquipmentAndQuickSlots' BepInEx plugin GUID, used for the soft dependency that orders load.</summary>
         internal const string EquipmentAndQuickSlotsGUID = "randyknapp.mods.equipmentandquickslots";
 
