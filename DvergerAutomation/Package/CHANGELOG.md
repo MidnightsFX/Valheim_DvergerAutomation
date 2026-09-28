@@ -1,3 +1,14 @@
+**0.10.0**
+- Fixes buildable prefabs missing sounds/visual effects for damage, destruction and placement
+- The Autosorter's Deposit All is now **Deposit Selected**, with a **[C]** button beside it that opens a deposit filter
+	- Click item categories to choose what gets deposited: armor, utility & trinkets, shields, weapons, ammo, tools & torches, food, meads & potions, materials, trophies, fish and miscellaneous
+	- Choice is user specific, and not synced to other players
+- The Dverger Hopper now services only smelters, charcoal kilns and blast furnaces by default. A new **[C]** lets you configure that.
+	- It shows one icon for each type of station in the hopper's range: smelters, kilns and blast furnaces, plus windmills, spinning wheels, eitr refineries and modded stations. Click an icon to turn it on or off
+	- The choice is saved on each hopper, so every player sees the same setting
+- Fixed the Dverger Hopper losing items on laggy multiplayer servers
+- Fixed crafting, building, auto-store and Epic Loot enchanting losing or duplicating items in linked chests on laggy multiplayer servers
+
 **0.9.0**
 
 - Carts and boats (Karve, Longship, Drakkar) within an Autosorter's range now count as storage for

@@ -6,27 +6,25 @@ using UnityEngine.UI;
 
 namespace DvergerAutomation {
     /// <summary>
-    /// The Deposit All button, shown on both of the mod's containers: one press moves the matching part
-    /// of the player's pack into the open container, so a haul goes in without dragging a stack at a
-    /// time.
+    /// The deposit button, shown on both of the mod's containers: one press moves the matching part of
+    /// the player's pack into the open container, so a haul goes in without dragging a stack at a time.
     ///
     /// What "matching" means depends on which container is open:
-    ///  - the AutoSorter's deposit box takes everything except the player's working set (equipped gear,
-    ///    the hotbar row, and any cell an equipment/quick-slot mod owns) and the item types listed in
-    ///    Deposit All Ignored Types, which defaults to gear and ammo. What lands is then sorted exactly
-    ///    as closing the box would sort it, so nothing here needs its own idea of where an item belongs.
+    ///  - the AutoSorter's deposit box shows it as Deposit Selected, and takes what the player picked in
+    ///    the [C] filter beside it (<see cref="DepositFilterPanel"/>): item categories, and whether the
+    ///    hotbar and an inventory mod's quick slots count. Equipped gear and equipment slots are never
+    ///    taken. What lands is then sorted exactly as closing the box would sort it, so nothing here
+    ///    needs its own idea of where an item belongs.
     ///  - the Hopper's storage takes only what its stations actually consume - the prefabs listed in
     ///    Hopper Deposit Items, which defaults to the wood a kiln burns and every ore a smelter or blast
-    ///    furnace melts. There is no sort step; the Hopper feeds itself from what is inside it.
+    ///    furnace melts. There is no sort step; the Hopper feeds itself from what is inside it. Its [C]
+    ///    (<see cref="HopperTargetPanel"/>) picks which stations it services, not what is deposited.
     ///
     /// The button takes over the slot vanilla's Place stacks button occupies, and hides it for as long
     /// as one of our containers is open. Ordinary chests are untouched and keep Place stacks.
     /// </summary>
     internal static class DepositAll {
         private const string ObjectName = "DA_DepositAllButton";
-
-        /// <summary>The player's hotbar is row 0 of their inventory - vanilla reads it as <c>GetItemAt(x, 0)</c>.</summary>
-        private const int HotbarRow = 0;
 
         /// <summary>Which of the mod's containers is open, which decides both the filter and the wording.</summary>
         private enum Target { None, Sorter, Hopper }
@@ -52,11 +50,31 @@ namespace DvergerAutomation {
             if (gui == null || gui.m_container == null || gui.m_stackAllButton == null) { return; }
             if (gui.m_container.Find(ObjectName) != null) { return; }
 
+            GameObject go = CloneStackAllButton(gui, ObjectName, OnClick);
+
+            // The template's rect is deliberately left exactly as cloned. Place stacks is a direct child
+            // of the same Container panel, so the copy lands precisely on top of it - which is the point:
+            // Refresh hides the original while ours is up, so the slot is taken over rather than shared.
+            button = go;
+            // A fresh button has a blank label, so the first container opened must write its wording
+            // even when it is the same kind as the last one opened before a logout.
+            shown = Target.None;
+
+            DepositFilterPanel.Attach(gui, (RectTransform)go.transform);
+            HopperTargetPanel.Attach(gui, (RectTransform)go.transform);
+        }
+
+        /// <summary>
+        /// A pointer-only copy of Place stacks, parented into the container panel, hidden, and calling
+        /// <paramref name="onClick"/>. Shared with the filter's [C] button so both carry the vanilla
+        /// button sprite, label styling, click sound and a tooltip.
+        /// </summary>
+        internal static GameObject CloneStackAllButton(InventoryGui gui, string name, UnityEngine.Events.UnityAction onClick) {
             // worldPositionStays false: the two-argument overload keeps the clone's world transform by
             // rewriting its local scale and position, which is never what a UI element parented into a
             // different panel wants.
             GameObject go = Object.Instantiate(gui.m_stackAllButton.gameObject, gui.m_container, false);
-            go.name = ObjectName;
+            go.name = name;
             go.SetActive(false);
 
             // Take All and Place stacks both bind the right stick; a third claimant would fight them for
@@ -71,15 +89,29 @@ namespace DvergerAutomation {
             // so the copy's onClick arrives empty. Cleared anyway rather than relying on that.
             Button click = go.GetComponent<Button>();
             click.onClick.RemoveAllListeners();
-            click.onClick.AddListener(OnClick);
+            click.onClick.AddListener(onClick);
 
-            // The template's rect is deliberately left exactly as cloned. Place stacks is a direct child
-            // of the same Container panel, so the copy lands precisely on top of it - which is the point:
-            // Refresh hides the original while ours is up, so the slot is taken over rather than shared.
+            DetachFromLocalization(go);
             go.transform.SetAsLastSibling();
-
             AddTooltip(gui, go);
-            button = go;
+            return go;
+        }
+
+        /// <summary>
+        /// Keeps vanilla from writing "Place stacks" back over the clone's label. This runs from
+        /// InventoryGui.Awake, before the inventory's Localize component has had its Start, so the copied
+        /// label still reads "$inventory_stackall". Start's pass would localize it and cache that token as
+        /// the label's original text, and every UIInputHint that toggles afterwards (RefreshLocalization)
+        /// re-applies cached originals to all visible labels, overwriting whatever we wrote there.
+        /// A label with no '$' in it is never cached, and dropping any entry already made covers the
+        /// case where Start has run.
+        /// </summary>
+        private static void DetachFromLocalization(GameObject go) {
+            Localization loc = Localization.instance;
+            foreach (TMP_Text text in go.GetComponentsInChildren<TMP_Text>(includeInactive: true)) {
+                if (text.text != null && text.text.Contains("$")) { text.text = ""; }
+                loc?.RemoveTextFromCache(text);
+            }
         }
 
         /// <summary>
@@ -107,7 +139,7 @@ namespace DvergerAutomation {
         internal static void Refresh(InventoryGui gui) {
             if (button == null) { return; }
 
-            Target target = TargetOf(gui != null ? gui.m_currentContainer : null);
+            Target target = TargetOf(gui != null ? gui.m_currentContainer : null, out HopperHub hopper);
             bool show = target != Target.None;
 
             if (button.activeSelf != show) { button.SetActive(show); }
@@ -120,10 +152,16 @@ namespace DvergerAutomation {
                 shown = target;
                 ApplyWording();
             }
+
+            // Each container has its own [C] in the same spot: the Sorter's picks what Deposit Selected
+            // takes, the Hopper's picks which stations it services.
+            DepositFilterPanel.Show(target == Target.Sorter);
+            HopperTargetPanel.Show(hopper);
         }
 
-        /// <summary>Which of the mod's containers this is, if either.</summary>
-        private static Target TargetOf(Container container) {
+        /// <summary>Which of the mod's containers this is, if either, and the Hopper when it is that one.</summary>
+        private static Target TargetOf(Container container, out HopperHub hopper) {
+            hopper = null;
             if (container == null) { return Target.None; }
             if (AutoStore.IsDepositBox(container)) { return Target.Sorter; }
 
@@ -131,7 +169,10 @@ namespace DvergerAutomation {
             // keeps this to the Hopper's own storage rather than any container that happens to sit under
             // a Hopper in the hierarchy.
             HopperHub hub = container.GetComponentInParent<HopperHub>();
-            if (hub != null && hub.Store == container) { return Target.Hopper; }
+            if (hub != null && hub.Store == container) {
+                hopper = hub;
+                return Target.Hopper;
+            }
 
             return Target.None;
         }
@@ -146,47 +187,51 @@ namespace DvergerAutomation {
             if (button == null || Localization.instance == null) { return; }
 
             bool hopper = shown == Target.Hopper;
+            string title = Localization.instance.Localize(hopper ? "$DA_deposit_hopper" : "$DA_deposit_selected");
 
             // Addressed by name rather than GetComponentInChildren, which would depend on this button's
             // label still being the first text in its subtree. The resolved string is written rather than
             // the raw "$..." token: vanilla's Localize pass over the panel only rewrites strings that
             // still contain '$', so writing resolved text keeps this label out of that machinery and out
-            // of its re-localization cache. The cost is that the label does not follow a language change
-            // made mid-session, which the tooltip below does.
+            // of its re-localization cache (CloneStackAllButton evicts the entry the cloned template
+            // text would otherwise have left there). The cost is that the label does not follow a
+            // language change made mid-session, which the tooltip below does.
             Transform labelRoot = button.transform.Find("Text");
             TMP_Text label = labelRoot != null ? labelRoot.GetComponent<TMP_Text>() : null;
-            if (label != null) {
-                label.text = Localization.instance.Localize(hopper ? "$DA_deposit_hopper" : "$DA_deposit_all");
-            }
+            if (label != null) { label.text = title; }
 
             UITooltip tooltip = button.GetComponent<UITooltip>();
             if (tooltip == null) { return; }
 
-            string text = Localization.instance.Localize(hopper ? "$DA_deposit_hopper_desc" : "$DA_deposit_all_desc");
+            string text = Localization.instance.Localize(hopper ? "$DA_deposit_hopper_desc" : "$DA_deposit_selected_desc");
             if (!hopper) {
-                if (ValConfig.DepositKeepFood.Value) {
-                    text += "\n" + Localization.instance.Localize("$DA_deposit_keeps_food");
-                }
-                if (IgnoredTypes().Count > 0) {
-                    text += "\n" + Localization.instance.Localize("$DA_deposit_keeps_types");
+                // The item categories are on show in the filter itself; the tooltip only spells out the
+                // two choices that decide whether the player's working set is touched at all.
+                text += "\n" + Localization.instance.Localize(ValConfig.DepositIncludeHotbar.Value
+                    ? "$DA_deposit_hotbar_in" : "$DA_deposit_hotbar_kept");
+                if (InventorySlotsIntegration.Active) {
+                    text += "\n" + Localization.instance.Localize(ValConfig.DepositIncludeQuickSlots.Value
+                        ? "$DA_deposit_quickslots_in" : "$DA_deposit_quickslots_kept");
                 }
             }
 
             // Set() rather than writing the fields: it also repaints a tooltip that is on screen right
             // now, which is the case when these are edited from the F1 menu with the container open.
-            tooltip.Set(Localization.instance.Localize(hopper ? "$DA_deposit_hopper" : "$DA_deposit_all"), text);
+            tooltip.Set(title, text);
         }
 
         // ---- filters ------------------------------------------------------------
 
         /// <summary>
-        /// Drops both parsed filters and repaints the tooltip. Subscribed by ValConfig to the two list
-        /// entries, so an edit in the F1 menu or an admin sync takes effect on the next press.
+        /// Drops both parsed filters and repaints the button's tooltip and the filter popup. Subscribed
+        /// by ValConfig to every deposit filter entry, so a click in the popup, an edit in the F1 menu
+        /// or a reload of the file takes effect on the next press.
         /// </summary>
         internal static void InvalidateFilters(object sender = null, System.EventArgs e = null) {
             ignoredTypes = null;
             hopperItems = null;
             ApplyWording();
+            DepositFilterPanel.Repaint();
         }
 
         /// <summary>
@@ -194,7 +239,7 @@ namespace DvergerAutomation {
         /// is not an <c>ItemType</c> is reported rather than silently dropped - a typo here is otherwise
         /// invisible, because the only symptom is that one kind of item keeps getting deposited.
         /// </summary>
-        private static HashSet<ItemDrop.ItemData.ItemType> IgnoredTypes() {
+        internal static HashSet<ItemDrop.ItemData.ItemType> IgnoredTypes() {
             if (ignoredTypes != null) { return ignoredTypes; }
 
             HashSet<ItemDrop.ItemData.ItemType> parsed = new HashSet<ItemDrop.ItemData.ItemType>();
@@ -258,7 +303,7 @@ namespace DvergerAutomation {
             if (player.IsTeleporting()) { return; }
 
             Container box = gui.m_currentContainer;
-            Target target = TargetOf(box);
+            Target target = TargetOf(box, out _);
             if (target == Target.None) { return; }
 
             // The same guard vanilla puts in front of both its bulk moves: a drag in progress holds an
@@ -310,16 +355,21 @@ namespace DvergerAutomation {
             Inventory dst = box.GetInventory();
             if (src == null || dst == null) { return 0; }
 
-            // Opening the container already made this client the ZDO owner (Container.RPC_RequestOpen
-            // sets it), but re-claim rather than assume: a write to a container we do not own never
-            // reaches Container.Save and is reverted off the ZDO within the second.
-            CraftFromStoragePatches.ClaimOwnership(box);
+            // Opening the container made this client its owner (Container.RPC_RequestOpen sets it). If that
+            // no longer holds, a write here would never reach Container.Save and would be reverted off the
+            // ZDO within the second, while the items had already left the pack - so move nothing. Vanilla
+            // hides the panel of a container it no longer owns anyway.
+            if (box.m_nview == null || !box.m_nview.IsValid() || !box.m_nview.IsOwner()) { return 0; }
+
+            // Which of the player's cells are hotbar, quick slots or an inventory mod's reserved rows -
+            // read once, before anything moves. The Hopper takes its list wherever it sits, so it skips this.
+            InventorySlotsIntegration.Snapshot slots = target == Target.Sorter ? InventorySlotsIntegration.Take(src) : null;
 
             int moved = 0;
             // GetAllItems hands back the live backing list and emptied stacks drop out of it, so iterate
             // a copy.
             foreach (ItemDrop.ItemData item in new List<ItemDrop.ItemData>(src.GetAllItems())) {
-                if (!ShouldDeposit(item, target)) { continue; }
+                if (!ShouldDeposit(item, target, slots)) { continue; }
 
                 // Read before the move: MoveMeasured removes from the source, which decrements m_stack.
                 int wanted = item.m_stack;
@@ -331,43 +381,51 @@ namespace DvergerAutomation {
         }
 
         /// <summary>Whether this item is the open container's to take.</summary>
-        private static bool ShouldDeposit(ItemDrop.ItemData item, Target target) {
+        private static bool ShouldDeposit(ItemDrop.ItemData item, Target target, InventorySlotsIntegration.Snapshot slots) {
             if (item == null || item.m_shared == null) { return false; }
 
             // Never moved, for either container and whatever the filters say: the equipped flag lives on
             // the item, so a worn item filed into a chest leaves the player equipping thin air.
             if (item.m_equipped) { return false; }
 
-            return target == Target.Hopper ? ShouldDepositHopper(item) : ShouldDepositSorter(item);
+            return target == Target.Hopper ? ShouldDepositHopper(item) : ShouldDepositSorter(item, slots);
         }
 
         /// <summary>
-        /// Everything except the player's working set and the configured ignored types. The exclusions
-        /// here are either something the player is actively using or something they told the mod to
-        /// leave alone.
+        /// What the player selected in the filter: the categories they left lit, from the cells they let
+        /// it reach. Everything held back here is either something the player is actively using or
+        /// something they told the mod to leave alone.
         /// </summary>
-        private static bool ShouldDepositSorter(ItemDrop.ItemData item) {
-            // The working set. The hotbar is row 0; the quick/equipment slots are rows an inventory mod
-            // carved out of the same grid.
-            if (item.m_gridPos.y == HotbarRow) { return false; }
-            if (EquipmentSlotsIntegration.IsReservedSlot(item.m_gridPos)) { return false; }
+        private static bool ShouldDepositSorter(ItemDrop.ItemData item, InventorySlotsIntegration.Snapshot slots) {
+            // The working set. The hotbar is row 0; quick and equipment slots are rows an inventory mod
+            // carved out of the same grid. The first two are the player's call, equipment slots never are.
+            switch (slots.Classify(item)) {
+                case InventorySlotsIntegration.SlotKind.Hotbar:
+                    if (!ValConfig.DepositIncludeHotbar.Value) { return false; }
+                    break;
+                case InventorySlotsIntegration.SlotKind.QuickSlot:
+                    if (!ValConfig.DepositIncludeQuickSlots.Value) { return false; }
+                    break;
+                case InventorySlotsIntegration.SlotKind.Reserved:
+                    return false;
+            }
 
             // The same rule the sort itself follows: with Sort Magic Items off the AutoSorter does not
             // handle enchanted gear, and depositing a legendary that the sort then refuses to file would
             // just strand it in the box.
             if (!ValConfig.SortMagicItems.Value && EpicLootIntegration.IsMagicItem(item)) { return false; }
 
-            // Food is a property rather than a type - anything that fills a food slot - so it stays its
-            // own switch. Going by ItemType would either miss food that is typed as something else or
-            // sweep up the meads and potions that share Consumable with it.
-            if (ValConfig.DepositKeepFood.Value && item.m_shared.m_food > 0f) { return false; }
+            // Food is a property rather than a type - anything that fills a food slot - so it is its own
+            // switch, and the only one that decides food. Going by ItemType would either miss food that
+            // is typed as something else or sweep up the meads and potions that share Consumable with it.
+            if (item.m_shared.m_food > 0f) { return !ValConfig.DepositKeepFood.Value; }
 
-            return !IgnoredTypes().Contains(item.m_shared.m_itemType);
+            return !IgnoredTypes().Contains(DepositCategories.Normalize(item.m_shared.m_itemType));
         }
 
         /// <summary>
         /// Only what the Hopper's stations consume. Deliberately does not spare the hotbar or quick
-        /// slots the way the deposit box does: this is a short, explicit list of raw materials, so
+        /// slots the way the deposit box can: this is a short, explicit list of raw materials, so
         /// "deposit my ore" is expected to mean all of it.
         /// </summary>
         private static bool ShouldDepositHopper(ItemDrop.ItemData item) {

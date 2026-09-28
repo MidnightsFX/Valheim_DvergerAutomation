@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -159,13 +160,25 @@ namespace DvergerAutomation {
             internal int Stored;
             internal int Chests;
             internal int Leftover;
+            // Some of the leftover has a chest to go to that another player still owns. It has been asked
+            // for, and RetrySort files the rest once it arrives.
+            internal bool Waiting;
         }
+
+        // Hubs with a RetrySort running, so a burst of sorts does not stack up retries.
+        private static readonly HashSet<AutomationHub> Retrying = new HashSet<AutomationHub>();
+        private const int RetryAttempts = 3;
+        private const float RetryDelay = 2f;
 
         /// <summary>
         /// Distributes the deposit box's contents into the hub's linked chests. Anything left over stays
         /// put in the box. Local-player only: it runs off the inventory UI closing, or off the Deposit All
         /// button, which passes <paramref name="report"/> false so it can fold this into one message of
         /// its own instead of having a second centre message overwrite it.
+        ///
+        /// Items only go into chests this client owns. A matching chest another player owns is asked for
+        /// (see <see cref="StorageOwnership"/>), the items it would take stay in the box, and a retry files
+        /// them a moment later once the chest has been handed over.
         /// </summary>
         internal static SortResult Sort(AutomationHub hub, Player player, bool report = true) {
             SortResult result = default;
@@ -173,11 +186,12 @@ namespace DvergerAutomation {
             Inventory src = hub.DepositBox.GetInventory();
             if (src == null || src.NrOfItems() == 0) { return result; }
 
-            // Opening the box already made this client the ZDO owner (Container.RPC_RequestOpen does
-            // SetOwner), but re-claim rather than assume: emptying the box on a non-owner never reaches
-            // Container.Save, and CheckForChanges reloads the pre-sort contents off the ZDO a second
-            // later - the items would be in the chests AND back in the box.
-            CraftFromStoragePatches.ClaimOwnership(hub.DepositBox);
+            // Opening the box made this client its owner (Container.RPC_RequestOpen does SetOwner). If that
+            // no longer holds, the box is someone else's to write: emptying it here would never reach
+            // Container.Save, CheckForChanges would reload the pre-sort contents off the ZDO, and the items
+            // would be in the chests AND back in the box. Leave it for whoever has it.
+            ZNetView boxView = hub.DepositBox.m_nview;
+            if (boxView == null || !boxView.IsValid() || !boxView.IsOwner()) { return result; }
 
             // A chest built since the last scan tick should still be a valid destination.
             hub.Rescan();
@@ -196,34 +210,25 @@ namespace DvergerAutomation {
                 if (!ValConfig.SortMagicItems.Value && EpicLootIntegration.IsMagicItem(item)) { continue; }
 
                 int remaining = item.m_stack;
+                bool asked = false;
                 foreach (Container target in hub.LinkedContainers) {
                     if (remaining <= 0) { break; }
-                    if (target == null) { continue; }
-                    // Public chests only. The linked pool admits a Private chest when the local player
-                    // placed it, which is right for crafting out of your own storage, but a locked chest is
-                    // a deliberate choice about what goes in it - it is never a sort destination. Group
-                    // chests never reach the pool, but the rule is phrased as "Public or nothing" so it
-                    // cannot quietly start admitting them.
-                    if (target.m_privacy != Container.PrivacySetting.Public) { continue; }
-                    // A hopper's store is a working buffer, not storage: it already holds whatever its
-                    // smelters just produced, so it matches everything of that type and would soak up
-                    // the whole haul - and a full hopper stops collecting output. Crafting still counts
-                    // it (it is in the linked pool), it just never receives sorted goods.
-                    if (target.GetComponentInParent<HopperHub>() != null) { continue; }
-                    // Boats and carts lend to crafting only. They leave, and anything filed into one
-                    // would leave with them - a cart that happens to carry wood is not the wood chest.
-                    if (hub.LinkedVehicles.ContainsKey(target)) { continue; }
+                    if (!IsSortTarget(hub, target)) { continue; }
                     Inventory dst = target.GetInventory();
                     if (dst == null || CraftFromStoragePatches.IsBusy(target)) { continue; }
                     if (!HasMatching(dst, item)) { continue; }
 
-                    // Checked before claiming, so a chest with no room does not get its ZDO ownership
-                    // yanked across the network for nothing.
+                    // Checked before asking, so a chest with no room is not handed over for nothing.
                     if (FreeSpaceFor(dst, item) <= 0) { continue; }
 
-                    // Container.OnContainerChanged -> Save() is a no-op for non-owners, so the write would
-                    // be silently reverted within the second.
-                    CraftFromStoragePatches.ClaimOwnership(target);
+                    // Only the chest's owner may write to it. One someone else owns is asked for, and this
+                    // item waits in the box for the retry.
+                    if (!StorageOwnership.TryAcquire(target)) {
+                        asked = true;
+                        continue;
+                    }
+                    // TryAcquire reloaded the grid, so ask again of what is actually in it now.
+                    if (!HasMatching(dst, item)) { continue; }
 
                     int landed = MoveMeasured(src, item, dst, remaining);
                     if (landed <= 0) { continue; }
@@ -231,6 +236,8 @@ namespace DvergerAutomation {
                     stored += landed;
                     usedChests.Add(target);
                 }
+                // Only waiting if an owned chest did not end up taking it all anyway.
+                if (asked && remaining > 0) { result.Waiting = true; }
             }
 
             if (stored > 0) {
@@ -244,12 +251,96 @@ namespace DvergerAutomation {
             if (ValConfig.EnableDebugMode.Value) {
                 Logger.LogInfo($"[AutoStore] stored {stored} items across {usedChests.Count} chests, {leftover} left in the box.");
             }
-            if (report) { Report(player, stored, usedChests.Count, leftover); }
+            if (report) { Report(player, stored, usedChests.Count, leftover, result.Waiting); }
 
             result.Stored = stored;
             result.Chests = usedChests.Count;
             result.Leftover = leftover;
+            if (result.Waiting && leftover > 0) { StartRetry(hub); }
             return result;
+        }
+
+        /// <summary>
+        /// Whether a linked container can receive sorted goods at all, before looking at what it holds.
+        /// </summary>
+        private static bool IsSortTarget(AutomationHub hub, Container target) {
+            if (target == null) { return false; }
+            // Public chests only. The linked pool admits a Private chest when the local player placed it,
+            // which is right for crafting out of your own storage, but a locked chest is a deliberate
+            // choice about what goes in it - it is never a sort destination. Group chests never reach the
+            // pool, but the rule is phrased as "Public or nothing" so it cannot quietly start admitting them.
+            if (target.m_privacy != Container.PrivacySetting.Public) { return false; }
+            // A hopper's store is a working buffer, not storage: it already holds whatever its smelters
+            // just produced, so it matches everything of that type and would soak up the whole haul - and
+            // a full hopper stops collecting output. Crafting still counts it (it is in the linked pool),
+            // it just never receives sorted goods.
+            if (target.GetComponentInParent<HopperHub>() != null) { return false; }
+            // Boats and carts lend to crafting only. They leave, and anything filed into one would leave
+            // with them - a cart that happens to carry wood is not the wood chest.
+            if (hub.LinkedVehicles.ContainsKey(target)) { return false; }
+            return true;
+        }
+
+        /// <summary>
+        /// While the player has a deposit box open, asks ahead for the chests its contents would be filed
+        /// into, so they are this client's by the time the box closes and the sort runs.
+        /// </summary>
+        internal static void WantAhead(Container open) {
+            if (open == null || !IsDepositBox(open) || !ValConfig.AutoStoreEnabled.Value) { return; }
+            AutomationHub hub = open.GetComponentInParent<AutomationHub>();
+            if (hub == null || hub.DepositBox != open) { return; }
+            if (ValConfig.RequireCores.Value && hub.CoreCount == 0) { return; }
+            Inventory src = open.GetInventory();
+            if (src == null || src.NrOfItems() == 0) { return; }
+
+            foreach (Container target in hub.LinkedContainers) {
+                if (!IsSortTarget(hub, target)) { continue; }
+                Inventory dst = target.GetInventory();
+                if (dst == null || CraftFromStoragePatches.IsBusy(target)) { continue; }
+                foreach (ItemDrop.ItemData item in src.GetAllItems()) {
+                    if (item == null || item.m_shared == null) { continue; }
+                    if (!ValConfig.SortMagicItems.Value && EpicLootIntegration.IsMagicItem(item)) { continue; }
+                    if (HasMatching(dst, item) && FreeSpaceFor(dst, item) > 0) {
+                        StorageOwnership.Want(target);
+                        break;
+                    }
+                }
+            }
+        }
+
+        private static void StartRetry(AutomationHub hub) {
+            if (!hub.isActiveAndEnabled || !Retrying.Add(hub)) { return; }
+            hub.StartCoroutine(RetrySort(hub));
+        }
+
+        /// <summary>
+        /// Files what a sort had to leave behind for chests that were still being handed over. Stops as
+        /// soon as nothing is waiting, when the player opens the box again (closing it sorts anyway), or
+        /// when the box is no longer this client's (Sort then does nothing and reports nothing waiting).
+        /// </summary>
+        private static IEnumerator RetrySort(AutomationHub hub) {
+            try {
+                for (int attempt = 0; attempt < RetryAttempts; ++attempt) {
+                    yield return new WaitForSeconds(RetryDelay);
+                    if (hub == null || hub.DepositBox == null || hub.DepositBox.IsInUse()) { yield break; }
+                    if (!RetryOnce(hub)) { yield break; }
+                }
+            } finally {
+                Retrying.Remove(hub);
+            }
+        }
+
+        // One retry pass. True when something is still waiting on a chest.
+        private static bool RetryOnce(AutomationHub hub) {
+            try {
+                SortResult result = Sort(hub, Player.m_localPlayer, report: false);
+                // Quiet unless something moved: a retry that files nothing has nothing new to say.
+                if (result.Stored > 0) { Report(Player.m_localPlayer, result.Stored, result.Chests, result.Leftover, result.Waiting); }
+                return result.Waiting && result.Leftover > 0;
+            } catch (System.Exception ex) {
+                Logger.LogError($"AutoStore: retrying the sort failed: {ex}");
+                return false;
+            }
         }
 
         /// <summary>
@@ -311,7 +402,7 @@ namespace DvergerAutomation {
         }
 
         // One centre message: a second would just overwrite the first.
-        private static void Report(Player player, int stored, int chests, int leftover) {
+        private static void Report(Player player, int stored, int chests, int leftover, bool waiting) {
             if (player == null) { return; }
             if (stored > 0 && leftover > 0) {
                 player.Message(MessageHud.MessageType.Center, Localization.instance.Localize(
@@ -320,7 +411,8 @@ namespace DvergerAutomation {
                 player.Message(MessageHud.MessageType.Center, Localization.instance.Localize(
                     "$DA_Sorted_items", stored.ToString(), chests.ToString()));
             } else if (leftover > 0) {
-                player.Message(MessageHud.MessageType.Center, "$DA_Sort_nothing");
+                // Nothing moved yet, but there are chests for it: they are on their way to this client.
+                player.Message(MessageHud.MessageType.Center, waiting ? "$DA_Sort_waiting" : "$DA_Sort_nothing");
             }
         }
     }

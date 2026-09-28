@@ -778,7 +778,31 @@ MonoBehaviour:
   m_harvestRadius: 0
   m_harvestRadiusMaxLevel: 0
   m_placeEffect:
-    m_effectPrefabs: []
+    m_effectPrefabs:
+    - m_prefab: {fileID: 4682280662713904782, guid: b5860a136d5842678ef3f9c226e17bb9,
+        type: 3}
+      m_enabled: 1
+      m_variant: -1
+      m_attach: 0
+      m_follow: 0
+      m_inheritParentRotation: 0
+      m_inheritParentScale: 0
+      m_multiplyParentVisualScale: 0
+      m_randomRotation: 0
+      m_scale: 0
+      m_childTransform: 
+    - m_prefab: {fileID: 504617302799479220, guid: 88e585d3daef458ca71e6d36207b76ac,
+        type: 3}
+      m_enabled: 1
+      m_variant: -1
+      m_attach: 0
+      m_follow: 0
+      m_inheritParentRotation: 0
+      m_inheritParentScale: 0
+      m_multiplyParentVisualScale: 0
+      m_randomRotation: 0
+      m_scale: 0
+      m_childTransform: 
   m_dlc: 
   m_craftingStation: {fileID: 0}
   m_returnResourceHeightOffset: 1
@@ -878,9 +902,57 @@ MonoBehaviour:
   m_destroyNoise: 0
   m_triggerPrivateArea: 1
   m_destroyedEffect:
-    m_effectPrefabs: []
+    m_effectPrefabs:
+    - m_prefab: {fileID: 1714334047725285403, guid: 2c9ba8f029294f1fa13cd5a7c8fa8bc8,
+        type: 3}
+      m_enabled: 1
+      m_variant: -1
+      m_attach: 0
+      m_follow: 0
+      m_inheritParentRotation: 0
+      m_inheritParentScale: 0
+      m_multiplyParentVisualScale: 0
+      m_randomRotation: 0
+      m_scale: 0
+      m_childTransform: 
+    - m_prefab: {fileID: 2597507828974712711, guid: 1ed73074bc2247098fc104e4b2bc603c,
+        type: 3}
+      m_enabled: 1
+      m_variant: -1
+      m_attach: 0
+      m_follow: 0
+      m_inheritParentRotation: 0
+      m_inheritParentScale: 0
+      m_multiplyParentVisualScale: 0
+      m_randomRotation: 0
+      m_scale: 0
+      m_childTransform: 
   m_hitEffect:
-    m_effectPrefabs: []
+    m_effectPrefabs:
+    - m_prefab: {fileID: 1714334047725285403, guid: 2c9ba8f029294f1fa13cd5a7c8fa8bc8,
+        type: 3}
+      m_enabled: 1
+      m_variant: -1
+      m_attach: 0
+      m_follow: 0
+      m_inheritParentRotation: 0
+      m_inheritParentScale: 0
+      m_multiplyParentVisualScale: 0
+      m_randomRotation: 0
+      m_scale: 0
+      m_childTransform: 
+    - m_prefab: {fileID: 2597507828974712711, guid: 1ed73074bc2247098fc104e4b2bc603c,
+        type: 3}
+      m_enabled: 1
+      m_variant: -1
+      m_attach: 0
+      m_follow: 0
+      m_inheritParentRotation: 0
+      m_inheritParentScale: 0
+      m_multiplyParentVisualScale: 0
+      m_randomRotation: 0
+      m_scale: 0
+      m_childTransform: 
   m_switchEffect:
     m_effectPrefabs: []
   m_autoCreateFragments: 1

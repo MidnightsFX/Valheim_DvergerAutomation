@@ -26,7 +26,7 @@ namespace DvergerAutomation {
         // Shared predicate for the by-name material paths: vanilla's own name/quality/world-level test,
         // plus Epic Loot's magic items, which share m_shared.m_name with their mundane counterpart and
         // must never be spent as one.
-        private static bool Matches(ItemDrop.ItemData item, string name, int quality) {
+        internal static bool Matches(ItemDrop.ItemData item, string name, int quality) {
             if (item == null || item.m_shared == null) { return false; }
             if (item.m_shared.m_name != name) { return false; }
             if (quality >= 0 && item.m_quality != quality) { return false; }
@@ -45,25 +45,17 @@ namespace DvergerAutomation {
             return station != null ? station.m_upgrader == requirement.m_upgraderResource : !requirement.m_upgraderResource;
         }
 
-        // Claims ownership before mutating a chest we do not own, so Container.OnContainerChanged -> Save
-        // actually persists and syncs the change.
-        internal static void ClaimOwnership(Container container) {
-            if (container == null) { return; }
-            if (container.m_nview != null && container.m_nview.IsValid() && !container.m_nview.IsOwner()) {
-                container.m_nview.ClaimOwnership();
-            }
-        }
-
         /// <summary>
-        /// True when a chest should be left alone because someone has it open. Claiming ownership out from
+        /// True when a chest should be left alone because someone has it open. Taking ownership out from
         /// under them blanks their container panel, and their <c>m_inUse</c> can then never clear, because
         /// <c>Container.SetInUse</c> is itself owner-gated - and a stuck <c>m_inUse</c> blocks
         /// <c>Container.Load</c>, so their copy of the chest stops updating for good. <c>IsInUse()</c> only
         /// reports the *local* field, so a remote player's session is visible only through the flag the
-        /// owner mirrors into the ZDO.
+        /// owner mirrors into the ZDO. The owner also refuses to hand over a chest that is open (see
+        /// <see cref="StorageOwnership"/>), so this is the requester not bothering to ask.
         ///
         /// A boat's hold or a cart's bed is also busy while someone else is aboard, pulling or riding it:
-        /// the hold shares the vehicle's ZDO, so claiming it takes the whole vehicle (see
+        /// the hold shares the vehicle's ZDO, so taking it takes the whole vehicle (see
         /// <see cref="VehicleStorage.InUse"/>).
         /// </summary>
         internal static bool IsBusy(Container container) {
@@ -75,8 +67,32 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
+        /// What the storage pool has to supply for <paramref name="requirements"/>: each ingredient's
+        /// amount less what the player carries, by shared name. Mirrors vanilla's
+        /// <c>Player.ConsumeResources</c>, which the consumption prefix below runs ahead of, so the check
+        /// before an action and the spend inside it agree on every number.
+        /// </summary>
+        internal static List<KeyValuePair<string, int>> Shortfalls(Player player, Piece.Requirement[] requirements, CraftingStation station, int qualityLevel, int itemQuality, int multiplier) {
+            List<KeyValuePair<string, int>> result = new List<KeyValuePair<string, int>>();
+            if (requirements == null) { return result; }
+            foreach (Piece.Requirement requirement in requirements) {
+                if (!AppliesAtStation(requirement, station)) { continue; }
+                int amount = requirement.GetAmount(qualityLevel) * multiplier;
+                if (amount <= 0) { continue; }
+                string name = requirement.m_resItem.m_itemData.m_shared.m_name;
+                int shortfall = amount - player.m_inventory.CountItems(name, itemQuality);
+                if (shortfall > 0) { result.Add(new KeyValuePair<string, int>(name, shortfall)); }
+            }
+            return result;
+        }
+
+        /// <summary>
         /// Removes up to <paramref name="amount"/> of <paramref name="name"/> across the pool and returns
         /// how many were actually taken (Epic Loot's inventory provider contract requires the count).
+        ///
+        /// Only from chests this client owns. One owned by someone else is asked for instead (see
+        /// <see cref="StorageOwnership"/>) and skipped; the checks in front of crafting and building make
+        /// sure the owned ones already cover the amount, so in practice nothing is skipped here.
         /// </summary>
         internal static int RemoveFromContainers(List<Container> pool, string name, int amount, int itemQuality) {
             int removed = 0;
@@ -87,21 +103,18 @@ namespace DvergerAutomation {
                 // IsBusy). The aggregate skips the same chests, so availability never promises its stock.
                 if (IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
-                if (inv == null) { continue; }
+                if (inv == null || !Holds(inv, name, itemQuality)) { continue; }
+                // Reloads the grid too, so the items walked below are the chest's current ones.
+                if (!StorageOwnership.TryAcquire(container)) { continue; }
 
                 // Removed per instance rather than by name so protected items can be stepped over; vanilla's
                 // Inventory.RemoveItem(string, ...) would happily eat them. GetAllItems hands back the live
                 // backing list and emptied stacks drop out of it, so walk it backwards.
-                bool claimed = false;
                 List<ItemDrop.ItemData> items = inv.GetAllItems();
                 for (int i = items.Count - 1; i >= 0 && amount > 0; --i) {
                     ItemDrop.ItemData item = items[i];
                     if (!Matches(item, name, itemQuality)) { continue; }
 
-                    if (!claimed) {
-                        ClaimOwnership(container);
-                        claimed = true;
-                    }
                     int take = Mathf.Min(item.m_stack, amount);
                     inv.RemoveItem(item, take);
                     amount -= take;
@@ -111,6 +124,15 @@ namespace DvergerAutomation {
             // Chest contents just changed: the frame-memoized aggregate is now stale.
             if (removed > 0) { ContainerNetwork.InvalidateItemCounts(); }
             return removed;
+        }
+
+        // Read off this client's copy, before asking for the chest: one that holds none of it is not worth
+        // a handoff.
+        private static bool Holds(Inventory inv, string name, int itemQuality) {
+            foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
+                if (Matches(item, name, itemQuality)) { return true; }
+            }
+            return false;
         }
     }
 
@@ -260,6 +282,62 @@ namespace DvergerAutomation {
         }
     }
 
+    // ---- waiting for storage: in front of station crafting and Hammer building ----
+    // Availability counts every linked chest, but only chests this client owns can be spent from (see
+    // StorageOwnership). The remaining gap is closed here, before the action: if part of what it needs is
+    // still in another player's chest, the action is held back, that chest is asked for, and the player
+    // tries again a moment later. Checked this early because consumption itself cannot fail - vanilla
+    // hands out the crafted item or places the piece and only then spends.
+
+    [HarmonyPatch(typeof(InventoryGui), "DoCrafting")]
+    internal static class InventoryGui_DoCrafting_Patch {
+        private static bool Prefix(InventoryGui __instance, Player player) {
+            try {
+                if (player == null || player != Player.m_localPlayer) { return true; }
+                Recipe recipe = __instance.m_craftRecipe;
+                // A one-of-these recipe spends only the ingredient the player carries (singleReqItem).
+                if (recipe == null || recipe.m_requireOnlyOneIngredient) { return true; }
+                if (player.NoCostCheat() || ZoneSystem.instance.GetGlobalKey(GlobalKeys.NoCraftCost)) { return true; }
+
+                // The quality and multiplier DoCrafting hands ConsumeResources.
+                CraftingStation station = player.GetCurrentCraftingStation();
+                int quality = __instance.m_craftUpgradeItem == null ? 1 : __instance.m_craftUpgradeItem.m_quality + 1;
+                int multiplier = __instance.m_multiCrafting ? __instance.m_multiCraftAmount : 1;
+                if (!StorageOwnership.MustWait(player, ContainerNetwork.GetContainersForStation(station), recipe.m_resources, station, quality, multiplier)) {
+                    return true;
+                }
+                player.Message(MessageHud.MessageType.Center, "$DA_storage_waiting");
+                return false;
+            } catch (System.Exception ex) {
+                // Let vanilla carry on: the worst case is the old behaviour, never a lost craft.
+                Logger.LogError($"Craft from storage: checking storage before crafting failed: {ex}");
+                return true;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Player), nameof(Player.TryPlacePiece))]
+    internal static class Player_TryPlacePiece_Patch {
+        private static bool Prefix(Player __instance, Piece piece, ref bool __result) {
+            try {
+                if (__instance == null || __instance != Player.m_localPlayer || piece == null) { return true; }
+                // Anything wrong with the placement itself is vanilla's to report.
+                if (__instance.m_placementStatus != Player.PlacementStatus.Valid) { return true; }
+                if (__instance.m_noPlacementCost || ZoneSystem.instance.GetGlobalKey(piece.FreeBuildKey())) { return true; }
+
+                // Building happens away from a station, so this is the pool ConsumeResources will use.
+                List<Container> pool = ContainerNetwork.GetContainersNearPoint(__instance.transform.position);
+                if (!StorageOwnership.MustWait(__instance, pool, piece.m_resources, null, 0, 1)) { return true; }
+                __instance.Message(MessageHud.MessageType.Center, "$DA_storage_waiting");
+                __result = false;
+                return false;
+            } catch (System.Exception ex) {
+                Logger.LogError($"Craft from storage: checking storage before building failed: {ex}");
+                return true;
+            }
+        }
+    }
+
     // ---- consumption: shared by station crafting AND Hammer building ----------
 
     [HarmonyPatch(typeof(Player), nameof(Player.ConsumeResources))]
@@ -273,16 +351,8 @@ namespace DvergerAutomation {
                 : ContainerNetwork.GetContainersNearPoint(__instance.transform.position);
             if (pool.Count == 0) { return; }
 
-            foreach (Piece.Requirement requirement in requirements) {
-                if (!CraftFromStoragePatches.AppliesAtStation(requirement, station)) { continue; }
-                int amount = requirement.GetAmount(qualityLevel) * multiplier;
-                if (amount <= 0) { continue; }
-                string name = requirement.m_resItem.m_itemData.m_shared.m_name;
-                int has = __instance.m_inventory.CountItems(name, itemQuality);
-                int shortfall = amount - has;
-                if (shortfall > 0) {
-                    CraftFromStoragePatches.RemoveFromContainers(pool, name, shortfall, itemQuality);
-                }
+            foreach (KeyValuePair<string, int> shortfall in CraftFromStoragePatches.Shortfalls(__instance, requirements, station, qualityLevel, itemQuality, multiplier)) {
+                CraftFromStoragePatches.RemoveFromContainers(pool, shortfall.Key, shortfall.Value, itemQuality);
             }
             // Returns void: vanilla then removes the remainder (what the player actually holds) normally.
         }

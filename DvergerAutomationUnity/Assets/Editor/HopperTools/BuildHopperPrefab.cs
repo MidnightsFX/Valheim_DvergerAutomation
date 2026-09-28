@@ -38,7 +38,15 @@ public static class BuildHopperPrefab {
     // SmokeSpawner.
     private const string MockDir = "Assets/Custom/Mocks/Prefabs";
     private const string SmokeMockName = "JVLmock_SmokeBall";
-    private const string SmokeMockPath = MockDir + "/" + SmokeMockName + ".prefab";
+
+    // Placement and damage effects, as vanilla's iron pieces use them (iron cooking station, traps,
+    // incinerator): the metal hammer on placement, sparks plus the metal clang when struck or
+    // destroyed. vfx_Place_forge is the dust puff sized for a ~1.8m-square machine, which this is.
+    // DA_Autosorter carries the same set. m_switchEffect is left empty: it only fires when
+    // WearNTear swaps m_new/m_worn/m_broken models, and this piece has none.
+    private static readonly string[] PlaceEffectMocks = { "JVLmock_vfx_Place_forge", "JVLmock_sfx_build_hammer_metal" };
+    private static readonly string[] HitEffectMocks = { "JVLmock_vfx_HitSparks", "JVLmock_sfx_metal_blocked" };
+    private static readonly string[] DestroyedEffectMocks = { "JVLmock_vfx_HitSparks", "JVLmock_sfx_metal_blocked" };
 
     // The continuous chimney smoke vanilla's smelter shows while running ("_enabled/smoke (1)" on the
     // smelter): its ParticleSystem and renderer copied verbatim from the game rip, with the renderer
@@ -374,7 +382,7 @@ public static class BuildHopperPrefab {
         smokeVent.transform.position = SmokeEmitPoint(root.transform, body, notes);
 
         SmokeSpawner spawner = smokeVent.AddComponent<SmokeSpawner>();
-        spawner.m_smokePrefab = EnsureSmokeMock(notes);
+        spawner.m_smokePrefab = EnsureMock(SmokeMockName, notes);
         // Identical to vanilla's smelter and blast furnace, so the plume reads the same.
         spawner.m_interval = 0.5f;
         spawner.m_testMask = 1 << SmokeLayer;
@@ -418,6 +426,7 @@ public static class BuildHopperPrefab {
         piece.m_clipGround = false;
         piece.m_noClipping = false;
         piece.m_allowedInDungeons = false;
+        piece.m_placeEffect = MockEffects(PlaceEffectMocks, notes);
         // Icon and build requirements are applied by Jotunn at runtime from the piece config.
 
         WearNTear wnt = root.AddComponent<WearNTear>();
@@ -432,6 +441,8 @@ public static class BuildHopperPrefab {
         // 100 while wood caps at 100, so a Stone piece can never be held by a wooden floor - it fails
         // HaveSupport() and takes 100 damage per wear tick until it breaks. Iron needs only 20.
         wnt.m_materialType = WearNTear.MaterialType.Iron;
+        wnt.m_hitEffect = MockEffects(HitEffectMocks, notes);
+        wnt.m_destroyedEffect = MockEffects(DestroyedEffectMocks, notes);
 
         HopperHub hub = root.AddComponent<HopperHub>();
         hub.CoreSwitches = switches;
@@ -461,32 +472,46 @@ public static class BuildHopperPrefab {
     }
 
     /// <summary>
-    /// The empty stand-in Jotunn resolves to vanilla's real SmokeBall. It only has to carry the right
-    /// name - Jotunn strips the "JVLmock_" prefix and looks the remainder up in the game's prefab cache.
-    /// Created on demand so a fresh clone of the repo does not need the asset committed.
+    /// An empty stand-in Jotunn resolves to the vanilla prefab of the same name. It only has to carry
+    /// the right name - Jotunn strips the "JVLmock_" prefix and looks the remainder up in the game's
+    /// prefab cache. Created on demand so a fresh clone of the repo does not need the asset committed.
     /// </summary>
-    private static GameObject EnsureSmokeMock(List<string> notes) {
-        GameObject existing = AssetDatabase.LoadAssetAtPath<GameObject>(SmokeMockPath);
+    private static GameObject EnsureMock(string mockName, List<string> notes) {
+        string path = MockDir + "/" + mockName + ".prefab";
+        GameObject existing = AssetDatabase.LoadAssetAtPath<GameObject>(path);
         if (existing != null) { return existing; }
 
         Directory.CreateDirectory(MockDir);
-        GameObject temp = new GameObject(SmokeMockName);
-        GameObject asset = PrefabUtility.SaveAsPrefabAsset(temp, SmokeMockPath);
+        GameObject temp = new GameObject(mockName);
+        GameObject asset = PrefabUtility.SaveAsPrefabAsset(temp, path);
         Object.DestroyImmediate(temp);
         if (asset == null) {
-            notes.Add("Could not create " + SmokeMockPath + "; the vents will not smoke.");
+            notes.Add("Could not create " + path + "; that effect will be missing in game.");
             return null;
         }
 
         // Mocks have to travel in the bundle with the piece that references them, the same way
         // JVLmock_surtlingcore.mat does.
-        AssetImporter importer = AssetImporter.GetAtPath(SmokeMockPath);
+        AssetImporter importer = AssetImporter.GetAtPath(path);
         if (importer != null) {
             importer.assetBundleName = BundleName;
             importer.SaveAndReimport();
         }
-        notes.Add("Created " + SmokeMockPath + " (bundle '" + BundleName + "').");
+        notes.Add("Created " + path + " (bundle '" + BundleName + "').");
         return asset;
+    }
+
+    /// <summary>
+    /// An EffectList of the named mocks with vanilla's default per-entry settings (enabled, no variant,
+    /// not attached). A mock that could not be created is left out rather than added as a null entry.
+    /// </summary>
+    private static EffectList MockEffects(string[] mockNames, List<string> notes) {
+        List<EffectList.EffectData> effects = new List<EffectList.EffectData>();
+        foreach (string mockName in mockNames) {
+            GameObject mock = EnsureMock(mockName, notes);
+            if (mock != null) { effects.Add(new EffectList.EffectData { m_prefab = mock }); }
+        }
+        return new EffectList { m_effectPrefabs = effects.ToArray() };
     }
 
     /// <summary>

@@ -89,7 +89,7 @@ namespace DvergerAutomation {
             }
         }
 
-        // Charcoal kiln, smelter, blast furnace... all share the Smelter component, so name the station.
+        // Charcoal kiln, smelter and blast furnace all share the Smelter component, so name the station.
         private static string StationName(Smelter smelter) {
             string display = Localization.instance != null ? Localization.instance.Localize(smelter.m_name) : smelter.m_name;
             return $"{display} ({smelter.gameObject.name.Replace("(Clone)", "")})";
@@ -103,6 +103,12 @@ namespace DvergerAutomation {
         /// Deliberately all-or-nothing: a prefix cannot spawn "the remainder", so a stack that does not
         /// fit is left entirely to vanilla and lands on the ground, which is also the clearest possible
         /// signal that the hopper is full.
+        ///
+        /// Only a hopper this client owns will take it. Spawn runs on the smelter's owner, and when that
+        /// is someone else, collecting would mean claiming the hopper from its owner mid-service. ZDO
+        /// data syncs as one revision per object, so under lag the two saves race and one rolls the other
+        /// back: the bars vanish, or ore that was already fed reappears. The product drops at the smelter
+        /// instead, and the hopper's next tick hands it to the smelter's owner (HandOffToStationOwner).
         /// </summary>
         internal static bool TryCollect(Smelter smelter, string ore, int stack) {
             if (smelter == null || stack <= 0) { return false; }
@@ -113,20 +119,16 @@ namespace DvergerAutomation {
             GameObject prefab = conversion.m_to.gameObject;
 
             foreach (HopperHub hub in Hubs) {
-                if (hub == null || !hub.IsActive) { continue; }
+                if (hub == null || !hub.IsActive || !hub.IsOwner) { continue; }
                 if (!hub.LinkedSmelters.Contains(smelter)) { continue; }
 
                 Container store = hub.Store;
                 if (store == null) { continue; }
-                Inventory inv = store.GetInventory();
-                if (inv == null) { continue; }
                 // Someone has the hatch open; leave their panel alone.
                 if (CraftFromStoragePatches.IsBusy(store)) { continue; }
-                if (!inv.CanAddItem(prefab, stack)) { continue; }
-
-                // Smelter.Spawn runs on the *smelter's* owner, which need not own this hopper, and
-                // Container.Save is a no-op for non-owners - the write would silently revert.
-                CraftFromStoragePatches.ClaimOwnership(store);
+                hub.SyncStore();
+                Inventory inv = store.GetInventory();
+                if (inv == null || !inv.CanAddItem(prefab, stack)) { continue; }
                 if (!inv.AddItem(prefab, stack)) { continue; }
 
                 // Vanilla plays this inside Spawn; skipping the original would otherwise swallow it.

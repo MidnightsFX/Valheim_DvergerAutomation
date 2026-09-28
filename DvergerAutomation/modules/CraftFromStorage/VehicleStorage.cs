@@ -49,10 +49,11 @@ namespace DvergerAutomation {
 
         /// <summary>
         /// True when spending from this container would take a vehicle out from under someone. A hold
-        /// shares its ZDO with the vehicle it rides on, so the <c>ClaimOwnership</c> that spending needs
-        /// hands the whole vehicle's simulation to this client: a cart being pulled detaches from the
-        /// player pulling it, and a boat with people aboard stutters until <c>Ship.UpdateOwner</c> hands
-        /// it back. False for anything that is not vehicle storage.
+        /// shares its ZDO with the vehicle it rides on, so the ownership that spending needs hands the
+        /// whole vehicle's simulation to this client: a cart being pulled detaches from the player pulling
+        /// it, and a boat with people aboard stutters until <c>Ship.UpdateOwner</c> hands it back. The
+        /// owner refuses to hand over a vehicle in use too (see <see cref="StorageOwnership"/>); this just
+        /// saves asking. False for anything that is not vehicle storage.
         /// </summary>
         internal static bool InUse(Container container) {
             if (!ContainerNetwork.TryGetCarrier(container, out MonoBehaviour carrier)) { return false; }

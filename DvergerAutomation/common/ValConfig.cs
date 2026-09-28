@@ -17,6 +17,8 @@ namespace DvergerAutomation {
         public static ConfigEntry<bool> CraftFromStorageEnabled;
         public static ConfigEntry<bool> DepositKeepFood;
         public static ConfigEntry<string> DepositIgnoredTypes;
+        public static ConfigEntry<bool> DepositIncludeHotbar;
+        public static ConfigEntry<bool> DepositIncludeQuickSlots;
         public static ConfigEntry<string> HopperDepositItems;
 
         // Dverger AutoSorter - "craft/build from nearby storage"
@@ -75,22 +77,29 @@ namespace DvergerAutomation {
                 "Whether crafting, upgrading, Hammer building and the Epic Loot enchanting table may spend materials out of the AutoSorter's linked chests. Off means only what you are carrying counts, as if no AutoSorter were in range. Toggled in-game with the button on the crafting panel.");
             CraftFromStorageEnabled.SettingChanged += CraftFromStorageToggle.OnConfigChanged;
 
-            // Client-side on purpose: Deposit All is the local player emptying their own pack, and what
-            // they want to keep on them is nobody else's business. On the AutoSorter's box, equipped
-            // gear, the hotbar and any equipment/quick-slot mod's cells are held back unconditionally;
-            // the two entries below are the parts that are a choice.
+            // Client-side on purpose: Deposit Selected is the local player emptying their own pack, and
+            // what they want to keep on them is nobody else's business. These four entries are what the
+            // [C] filter beside the button writes; equipped gear and an inventory mod's equipment slots
+            // are held back unconditionally.
             DepositKeepFood = Config.Bind("Client config", "Deposit All Keeps Food", true,
-                "Leaves food in your pack when Deposit All runs at the AutoSorter. Only actual food is kept (anything that fills a food slot); meads and other potions are deposited like any other item. Food is a property rather than an item type, which is why it is its own switch instead of a line in the list below.");
+                "Leaves food in your pack when Deposit Selected runs at the AutoSorter (the Food icon in its [C] filter). Only actual food counts (anything that fills a food slot), and this is the only setting that decides it, whatever its item type. Meads and other potions follow the Consumable type in the list below.");
             DepositIgnoredTypes = Config.Bind("Client config", "Deposit All Ignored Types",
                 "Helmet, Chest, Legs, Hands, Shoulder, Utility, Trinket, OneHandedWeapon, TwoHandedWeapon, TwoHandedWeaponLeft, Bow, Shield, Tool, Torch, Ammo, AmmoNonEquipable",
-                "Item types Deposit All leaves in your pack at the AutoSorter, comma separated. Defaults to gear and ammo. Valid names: None, Material, Consumable, OneHandedWeapon, Bow, Shield, Helmet, Chest, Ammo, Customization, Legs, Hands, Trophy, TwoHandedWeapon, Torch, Misc, Shoulder, Utility, Tool, Attach_Atgeir, Fish, TwoHandedWeaponLeft, AmmoNonEquipable, Trinket. Clear the entry to deposit every type.");
+                "Item types Deposit Selected leaves in your pack at the AutoSorter, comma separated. Easiest set from the [C] filter beside the button, which groups them into categories; listing only some of a category's types here shows it half lit there. Defaults to gear and ammo. Valid names: None, Material, Consumable, OneHandedWeapon, Bow, Shield, Helmet, Chest, Ammo, Customization, Legs, Hands, Trophy, TwoHandedWeapon, Torch, Misc, Shoulder, Utility, Tool, Attach_Atgeir, Fish, TwoHandedWeaponLeft, AmmoNonEquipable, Trinket. Item types added by other mods count as Misc. Clear the entry to deposit every type.");
+            DepositIncludeHotbar = Config.Bind("Client config", "Deposit All Includes Hotbar", false,
+                "Lets Deposit Selected take items from your hotbar (the top inventory row) at the AutoSorter, filtered like the rest of your pack. Equipped items always stay. Toggled in-game from the [C] filter.");
+            DepositIncludeQuickSlots = Config.Bind("Client config", "Deposit All Includes Quick Slots", false,
+                "Lets Deposit Selected take items from an inventory mod's quick slots at the AutoSorter, filtered like the rest of your pack: EquipmentAndQuickSlots and AzuExtendedPlayerInventory quick slots, and ExtraSlots quick, ammo, food and misc slots. Equipment slots and custom slots other mods add always stay. Does nothing without one of those mods. Toggled in-game from the [C] filter.");
             HopperDepositItems = Config.Bind("Client config", "Hopper Deposit Items",
                 "Wood, FineWood, RoundLog, CopperOre, TinOre, IronOre, IronScrap, BronzeScrap, SilverOre, CopperScrap, FlametalOreNew, BlackMetalScrap",
-                "Item prefabs Deposit All moves into the Dverger Hopper, comma separated. Defaults to the wood a charcoal kiln burns and every ore a smelter or blast furnace melts. Add Coal to hand it fuel directly, or Barley, Flax and Softtissue for the windmill, spinning wheel and eitr refinery. Unlike the AutoSorter's button this does not spare your hotbar - only equipped items are left alone.");
-            // The tooltip names whichever filters are on, and both lists are parsed once and cached, so
-            // an edit has to invalidate that and repaint.
-            DepositKeepFood.SettingChanged += DepositAll.ApplyWording;
+                "Item prefabs the Hopper's deposit button moves into the Dverger Hopper, comma separated. Defaults to the wood a charcoal kiln burns and every ore a smelter or blast furnace melts. Add Coal to hand it fuel directly. Unlike the AutoSorter's button this does not spare your hotbar - only equipped items are left alone.");
+            // The lists are parsed once and cached, and the button's tooltip and the [C] filter both show
+            // these settings, so any edit - a click in the filter, the F1 menu, a reload of the file - has
+            // to drop the cache and repaint both.
+            DepositKeepFood.SettingChanged += DepositAll.InvalidateFilters;
             DepositIgnoredTypes.SettingChanged += DepositAll.InvalidateFilters;
+            DepositIncludeHotbar.SettingChanged += DepositAll.InvalidateFilters;
+            DepositIncludeQuickSlots.SettingChanged += DepositAll.InvalidateFilters;
             HopperDepositItems.SettingChanged += DepositAll.InvalidateFilters;
 
             AutomationEnabled = BindServerConfig("Dverger AutoSorter", "Enabled", true, "Enables the Dverger AutoSorter: nearby accessible chests act as a shared material pool when crafting at linked stations or building with the Hammer near the sorter.");
@@ -112,7 +121,7 @@ namespace DvergerAutomation {
             DepositBoxWidth = BindServerConfig("Dverger AutoSorter", "Deposit Box Width", AutoStore.DefaultWidth, $"Columns in the AutoSorter's deposit box. Capped at {AutoStore.MaxWidth}: the container panel does not scroll sideways, so wider grids spill off the screen.", false, AutoStore.MinSize, AutoStore.MaxWidth);
             DepositBoxHeight = BindServerConfig("Dverger AutoSorter", "Deposit Box Height", AutoStore.DefaultHeight, "Rows in the AutoSorter's deposit box. Rows beyond what the container panel shows scroll.", false, AutoStore.MinSize, AutoStore.MaxHeight);
 
-            HopperEnabled = BindServerConfig("Dverger Hopper", "Enabled", true, "Enables the Dverger Hopper: it feeds ore and fuel from its own inventory into nearby smelters, kilns, blast furnaces, windmills, spinning wheels and eitr refineries, and collects what they produce back into that same inventory.");
+            HopperEnabled = BindServerConfig("Dverger Hopper", "Enabled", true, "Enables the Dverger Hopper: it feeds ore and fuel from its own inventory into nearby smelters, charcoal kilns and blast furnaces, and collects what they produce back into that same inventory. Other processing stations (windmills, spinning wheels, eitr refineries, modded ones) can be turned on per Hopper from the [C] button beside its deposit button.");
             HopperInterval = BindServerConfig("Dverger Hopper", "Tick Interval", 4f, "Seconds between service passes. Each pass collects finished product, tops up fuel, then queues ore.", false, 1, 60);
             HopperRadius = BindServerConfig("Dverger Hopper", "Scan Radius", 16f, "Base radius (meters) in which the Hopper services smelters, before any Surtling Core bonus.", false, 1, 64);
             HopperRangePerCore = BindServerConfig("Dverger Hopper", "Range Per Core", 5f, "Extra service radius (meters) added per inserted Surtling Core.", false, 0, 50);

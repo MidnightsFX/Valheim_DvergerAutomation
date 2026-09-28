@@ -16,27 +16,34 @@ namespace DvergerAutomation
     // Soft: Epic Loot is optional, but when it is installed it has to be loaded before Awake runs here,
     // or the reflection-bound API cannot resolve its assembly yet and the provider silently never registers.
     [BepInDependency(EpicLootIntegration.EpicLootGUID, BepInDependency.DependencyFlags.SoftDependency)]
-    // Soft, and for the same reason: Deposit All asks EquipmentAndQuickSlots which grid cells are its
-    // slots so it never empties one, and the reflection shim can only answer once that assembly is loaded.
+    // Soft, and for the same reason: Deposit Selected asks EquipmentAndQuickSlots which grid cells are its
+    // slots so it only empties one the player allowed, and the reflection shim can only answer once that
+    // assembly is loaded.
+    // AzuExtendedPlayerInventory and ExtraSlots are deliberately not declared: they are only asked when the
+    // button is pressed, long after every plugin has loaded, and declaring AzuEPI opts this assembly into its
+    // load-time rewriter, which reloads any dependent plugin from bytes to redirect its API stubs.
     [BepInDependency(EquipmentAndQuickSlotsGUID, BepInDependency.DependencyFlags.SoftDependency)]
     [NetworkCompatibility(CompatibilityLevel.EveryoneMustHaveMod, VersionStrictness.Minor)]
     internal class DvergerAutomation : BaseUnityPlugin
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "0.9.0";
+        public const string PluginVersion = "0.10.0";
         /// <summary>EquipmentAndQuickSlots' BepInEx plugin GUID, used for the soft dependency that orders load.</summary>
         internal const string EquipmentAndQuickSlotsGUID = "randyknapp.mods.equipmentandquickslots";
 
         internal static ManualLogSource Log;
         internal ValConfig cfg;
 
-        public static CustomLocalization Localization = LocalizationManager.Instance.GetLocalization();
+        // Set in Awake, not here: a static initialiser can run before BepInEx has registered this plugin, and Jotunn
+        // then attributes the whole mod - its RPC names included - to Jotunn itself for the rest of the session.
+        public static CustomLocalization Localization;
         public static AssetBundle EmbeddedResourceBundle;
         public static Harmony HarmonyInstance { get; private set; }
 
         public void Awake()
         {
+            Localization = LocalizationManager.Instance.GetLocalization();
             Log = this.Logger;
             cfg = new ValConfig(Config);
 

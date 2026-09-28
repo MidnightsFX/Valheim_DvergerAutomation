@@ -202,12 +202,21 @@ namespace DvergerAutomation {
         private static readonly List<ItemDrop.ItemData> ItemsResult = new List<ItemDrop.ItemData>();
         private static int itemsFrame = -1;
 
+        // When the table last read the pool. While it keeps reading, the pool's chests are asked for.
+        private static float lastRead = -1f;
+
+        // The provider only offers what sits in chests this client owns (see StorageOwnership). Epic Loot
+        // never checks what RemoveItem hands back - it pays out whatever it asked for - so everything it is
+        // shown here has to be spendable on the spot. The rest of the pool is asked for while the table is
+        // open (WantAhead) and shows up as it arrives.
         private static List<ItemDrop.ItemData> GetItems() {
+            lastRead = Time.time;
             if (itemsFrame == Time.frameCount) { return ItemsResult; }
 
             ItemsResult.Clear();
             foreach (Container container in Pool()) {
-                if (container == null || CraftFromStoragePatches.IsBusy(container)) { continue; }
+                if (!StorageOwnership.IsSpendable(container)) { continue; }
+                StorageOwnership.Sync(container);
                 Inventory inv = container.GetInventory();
                 if (inv == null) { continue; }
                 ItemsResult.AddRange(inv.GetAllItems());
@@ -217,7 +226,8 @@ namespace DvergerAutomation {
         }
 
         private static int CountItem(string name) {
-            return string.IsNullOrEmpty(name) ? 0 : ContainerNetwork.CountInPool(Pool(), name);
+            lastRead = Time.time;
+            return string.IsNullOrEmpty(name) ? 0 : ContainerNetwork.CountSpendableInPool(Pool(), name);
         }
 
         private static int RemoveItem(string name, int amount) {
@@ -233,13 +243,30 @@ namespace DvergerAutomation {
                 if (container == null || CraftFromStoragePatches.IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null || !inv.ContainsItem(item)) { continue; }
+                // Only its owner may write to it. Checked after finding the item, so only the chest that
+                // actually holds it is asked for. A reload inside TryAcquire can swap the instances, which
+                // is why the item is looked for again after it.
+                if (!StorageOwnership.TryAcquire(container) || !inv.ContainsItem(item)) { return 0; }
 
-                CraftFromStoragePatches.ClaimOwnership(container);
                 int take = Mathf.Min(item.m_stack, amount);
                 inv.RemoveItem(item, take);
+                ContainerNetwork.InvalidateItemCounts();
                 return take;
             }
             return 0;
+        }
+
+        /// <summary>
+        /// While the enchanting table is reading the pool, asks for every chest in it that holds anything,
+        /// so what the table shows fills in within a round trip. Called from StorageOwnership's tick.
+        /// </summary>
+        internal static void WantAhead() {
+            if (!Active || Time.time - lastRead > 1.5f) { return; }
+            foreach (Container container in Pool()) {
+                if (container == null) { continue; }
+                Inventory inv = container.GetInventory();
+                if (inv != null && inv.NrOfItems() > 0) { StorageOwnership.Want(container); }
+            }
         }
     }
 }

@@ -22,6 +22,8 @@ Built with the Hammer, in the **Crafting** category, near a **Forge** (Rrequirem
 
 The autosorter can be upgraded with Surtling cores to increase its range. It has 4 core slots, and configurably requires at least 1 core to work.
 There is a front hopper on the machine that allows depositing items for it to store into chests. Items not sorted will be left in the inventory.
+Its **Deposit Selected** button moves your pack straight in. The **[C]** button beside it picks which kinds of item go, and whether your hotbar and
+quick slots (EquipmentAndQuickSlots, AzuExtendedPlayerInventory or ExtraSlots) are included. Equipped gear always stays on you.
 
 Carts and boats in range count as storage too, so you can craft straight out of the cart you just pulled up to the workshop. 
 They are only ever crafted from, never sorted into, and each can be turned off (`Craft From Carts`, `Craft From Boats`).
@@ -41,7 +43,9 @@ Built with the Hammer, in the **Crafting** category, near a **Forge** (Rrequirem
 | Bronze | 8 |
 | Coal | 20 |
 
-The furnace hopper allows you to automatically process wood, and metals in nearby kilns and furnances. It has a relatively short range.
+The furnace hopper allows you to automatically process wood, and metals in nearby charcoal kilns, smelters and blast furnaces. It has a relatively short range.
+Other processing stations (windmills, spinning wheels, eitr refineries and modded ones) are left alone unless you turn them on: the **[C]** button beside its deposit button
+shows every type of station in range, and a click switches each one on or off for that hopper.
 But can be upgraded with up to 6 surtling cores. Configurably 1 core is required for it to turn on. Each core increase processing speed of managed furnaces/kilns.
 
 ### Respects locks and wards

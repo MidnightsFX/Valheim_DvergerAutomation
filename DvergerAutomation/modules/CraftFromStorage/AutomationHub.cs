@@ -27,9 +27,6 @@ namespace DvergerAutomation {
         // active state, lit visuals and extended range survive reloads and replicate to other clients.
         private const string CoreMaskKey = "DA_cores";
 
-        // Surtling Core prefab name (used to remove/refund/drop cores).
-        private const string SurtlingCorePrefab = "SurtlingCore";
-
         private ZNetView nview;
 
         // Links produced by the most recent scan. Read by ContainerNetwork.
@@ -60,6 +57,8 @@ namespace DvergerAutomation {
             DepositBox = GetComponentInChildren<Container>(includeInactive: true);
             if (nview != null && nview.GetZDO() != null) {
                 nview.Register("DA_RefreshCores", new Action<long>(RPC_RefreshCores));
+                nview.Register<int, bool>("DA_SorterCoreRequest", RPC_CoreRequest);
+                nview.Register<int, bool>("DA_SorterCoreResult", RPC_CoreResult);
                 WearNTear wnt = GetComponent<WearNTear>();
                 if (wnt != null) { wnt.m_onDestroyed += OnDestroyedDropCores; }
                 // Live pieces only - the placement ghost has no ZDO and no inventory to size or protect.
@@ -127,7 +126,7 @@ namespace DvergerAutomation {
             }
         }
 
-        private static long LocalPlayerId() {
+        internal static long LocalPlayerId() {
             return (Game.instance != null && Game.instance.GetPlayerProfile() != null)
                 ? Game.instance.GetPlayerProfile().GetPlayerID()
                 : 0L;
@@ -256,20 +255,33 @@ namespace DvergerAutomation {
         /// <summary>Base link radius plus the configured bonus for each inserted core.</summary>
         internal float EffectiveRadius => ValConfig.ScanRadius.Value + CoreCount * ValConfig.RangePerCore.Value;
 
-        // Persists a new core bitmask: take ownership, write the ZDO, tell every client to refresh its
-        // visuals, and relink locally so the new range/active state applies immediately for this client.
-        private void SetCoreMask(int mask) {
-            if (nview == null || !nview.IsValid()) { return; }
-            if (!nview.IsOwner()) { nview.ClaimOwnership(); }
-            nview.GetZDO().Set(CoreMaskKey, mask);
+        /// <summary>
+        /// Owner side of a core socket being used (the exchange is described on <see cref="SurtlingCore"/>):
+        /// the mask shares this ZDO with the deposit box's items, so only the owner writes it. A request
+        /// that finds the slot already in the asked-for state - two players at once - changes nothing and
+        /// is not answered.
+        /// </summary>
+        private void RPC_CoreRequest(long sender, int slot, bool insert) {
+            if (nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
+            if (slot < 0 || slot >= 4) { return; }
+            int mask = GetCoreMask();
+            int bit = 1 << slot;
+            if (((mask & bit) != 0) == insert) { return; }
+
+            nview.GetZDO().Set(CoreMaskKey, insert ? mask | bit : mask & ~bit);
+            nview.InvokeRPC(sender, "DA_SorterCoreResult", slot, insert);
+            // Everybody includes this client: every copy refreshes its visuals and relinks.
             nview.InvokeRPC(ZNetView.Everybody, "DA_RefreshCores");
-            UpdateVisuals();
-            // Relink immediately so the new range / active state applies without waiting for the scan tick.
-            if (ValConfig.AutomationEnabled.Value && Player.m_localPlayer != null) { Scan(); }
+        }
+
+        private void RPC_CoreResult(long sender, int slot, bool inserted) {
+            SurtlingCore.Settle(inserted);
         }
 
         private void RPC_RefreshCores(long sender) {
             UpdateVisuals();
+            // Relink immediately so the new range / active state applies without waiting for the scan tick.
+            if (ValConfig.AutomationEnabled.Value && Player.m_localPlayer != null) { Scan(); }
         }
 
         private void WireSwitch(Switch sw, int slot) {
@@ -296,29 +308,24 @@ namespace DvergerAutomation {
             if (!PrivateArea.CheckAccess(transform.position)) { return false; }
             if (nview == null || !nview.IsValid()) { return false; }
 
-            GameObject corePrefab = ObjectDB.instance != null ? ObjectDB.instance.GetItemPrefab(SurtlingCorePrefab) : null;
+            GameObject corePrefab = SurtlingCore.Prefab;
             if (corePrefab == null) { return false; }
-            string coreName = corePrefab.GetComponent<ItemDrop>().m_itemData.m_shared.m_name;
+            string coreName = SurtlingCore.SharedName(corePrefab);
 
-            int mask = GetCoreMask();
-            bool filled = (mask & (1 << slot)) != 0;
-
+            bool filled = (GetCoreMask() & (1 << slot)) != 0;
             if (filled) {
-                if (!player.GetInventory().AddItem(corePrefab, 1)) {
+                if (!player.GetInventory().CanAddItem(corePrefab, 1)) {
                     user.Message(MessageHud.MessageType.Center, "$inventory_full");
                     return false;
                 }
-                SetCoreMask(mask & ~(1 << slot));
-                user.Message(MessageHud.MessageType.Center, "$DA_Remove_Core");
-            } else {
-                if (player.GetInventory().CountItems(coreName) <= 0) {
-                    user.Message(MessageHud.MessageType.Center, "$DA_Need_Core");
-                    return false;
-                }
-                player.GetInventory().RemoveItem(coreName, 1);
-                SetCoreMask(mask | (1 << slot));
-                user.Message(MessageHud.MessageType.Center, "$DA_Add_Core");
+            } else if (player.GetInventory().CountItems(coreName) <= 0) {
+                user.Message(MessageHud.MessageType.Center, "$DA_Need_Core");
+                return false;
             }
+
+            // Asked of the owner rather than written here (see SurtlingCore). When this client is the
+            // owner, both RPCs run synchronously.
+            nview.InvokeRPC("DA_SorterCoreRequest", slot, !filled);
             return true;
         }
 
@@ -348,7 +355,7 @@ namespace DvergerAutomation {
             if (nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
             int count = CoreCount;
             if (count <= 0) { return; }
-            GameObject corePrefab = ObjectDB.instance != null ? ObjectDB.instance.GetItemPrefab(SurtlingCorePrefab) : null;
+            GameObject corePrefab = SurtlingCore.Prefab;
             if (corePrefab == null) { return; }
             for (int i = 0; i < count; ++i) {
                 Vector3 pos = transform.position + Vector3.up * 0.5f + UnityEngine.Random.insideUnitSphere * 0.3f;
@@ -388,6 +395,12 @@ namespace DvergerAutomation {
         private static readonly Dictionary<string, int> AggCounts = new Dictionary<string, int>();
         private static int aggFrame = -1;
         private static List<Container> aggPool;
+
+        // The same aggregate over only the chests this client owns - what can be spent without asking
+        // anyone (see StorageOwnership). Kept apart so the two never evict each other within a frame.
+        private static readonly Dictionary<string, int> SpendCounts = new Dictionary<string, int>();
+        private static int spendFrame = -1;
+        private static List<Container> spendPool;
 
         // Frame-memoized result of GetContainersNearPoint so the Hammer-build path stops reallocating
         // and re-deduping every frame, and returns a stable list reference the aggregate memo can key on.
@@ -443,6 +456,8 @@ namespace DvergerAutomation {
         internal static void InvalidateItemCounts() {
             aggFrame = -1;
             aggPool = null;
+            spendFrame = -1;
+            spendPool = null;
             // Epic Loot's enchanting table reads a memo of the same pool, on the same per-frame basis.
             EpicLootIntegration.InvalidateItemCache();
         }
@@ -494,16 +509,33 @@ namespace DvergerAutomation {
         internal static int CountInPool(List<Container> pool, string name) {
             if (pool == null || pool.Count == 0) { return 0; }
             if (aggFrame != Time.frameCount || !ReferenceEquals(aggPool, pool)) {
-                BuildAggregate(pool);
+                BuildAggregate(pool, AggCounts, spendableOnly: false);
+                aggFrame = Time.frameCount;
+                aggPool = pool;
             }
             return AggCounts.TryGetValue(name, out int total) ? total : 0;
         }
 
-        private static void BuildAggregate(List<Container> pool) {
+        /// <summary>
+        /// <see cref="CountInPool"/> over only the chests this client owns, each brought up to date with
+        /// its ZDO first. What crafting can spend right now without waiting on a handoff.
+        /// </summary>
+        internal static int CountSpendableInPool(List<Container> pool, string name) {
+            if (pool == null || pool.Count == 0) { return 0; }
+            if (spendFrame != Time.frameCount || !ReferenceEquals(spendPool, pool)) {
+                BuildAggregate(pool, SpendCounts, spendableOnly: true);
+                // Set after the build: a Sync inside it that reloads a grid invalidates the memo.
+                spendFrame = Time.frameCount;
+                spendPool = pool;
+            }
+            return SpendCounts.TryGetValue(name, out int total) ? total : 0;
+        }
+
+        private static void BuildAggregate(List<Container> pool, Dictionary<string, int> counts, bool spendableOnly) {
             bool debug = ValConfig.EnableDebugMode.Value;
             double startTime = debug ? Time.realtimeSinceStartupAsDouble : 0.0;
 
-            AggCounts.Clear();
+            counts.Clear();
             int worldLevel = Game.m_worldLevel;
             foreach (Container container in pool) {
                 if (container == null) { continue; }
@@ -511,6 +543,10 @@ namespace DvergerAutomation {
                 // CraftFromStoragePatches.IsBusy), so it must not read as stock either. Rebuilt every
                 // frame, so it drops out and comes back as the chest is opened and closed.
                 if (CraftFromStoragePatches.IsBusy(container)) { continue; }
+                if (spendableOnly) {
+                    if (!StorageOwnership.IsSpendable(container)) { continue; }
+                    StorageOwnership.Sync(container);
+                }
                 Inventory inv = container.GetInventory();
                 if (inv == null) { continue; }
                 foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
@@ -520,16 +556,14 @@ namespace DvergerAutomation {
                     // such either - otherwise a chest of legendaries reads as free crafting stock.
                     if (EpicLootIntegration.IsProtectedItem(item)) { continue; }
                     string itemName = item.m_shared.m_name;
-                    AggCounts.TryGetValue(itemName, out int cur);
-                    AggCounts[itemName] = cur + item.m_stack;
+                    counts.TryGetValue(itemName, out int cur);
+                    counts[itemName] = cur + item.m_stack;
                 }
             }
-            aggFrame = Time.frameCount;
-            aggPool = pool;
 
             if (debug) {
                 double ms = (Time.realtimeSinceStartupAsDouble - startTime) * 1000.0;
-                Logger.LogInfo($"[Autosorter] aggregated {pool.Count} chests, {AggCounts.Count} item types in {ms:F2}ms.");
+                Logger.LogInfo($"[Autosorter] aggregated {pool.Count} chests{(spendableOnly ? " (owned only)" : "")}, {counts.Count} item types in {ms:F2}ms.");
             }
         }
     }
