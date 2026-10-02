@@ -24,6 +24,7 @@ namespace DvergerAutomation {
         // Dverger AutoSorter - "craft/build from nearby storage"
         public static ConfigEntry<bool> AutomationEnabled;
         public static ConfigEntry<float> ScanInterval;
+        public static ConfigEntry<bool> FastInitialScan;
         public static ConfigEntry<float> ScanRadius;
         public static ConfigEntry<float> RangePerCore;
         public static ConfigEntry<bool> RequireCores;
@@ -107,6 +108,7 @@ namespace DvergerAutomation {
             // off, so it hides itself; that only works if a sync of this value repaints it.
             AutomationEnabled.SettingChanged += CraftFromStorageToggle.OnConfigChanged;
             ScanInterval = BindServerConfig("Dverger AutoSorter", "Scan Interval", 30f, "Seconds between scans for nearby crafting stations and storage chests.", false, 5, 300);
+            FastInitialScan = BindServerConfig("Dverger AutoSorter", "Fast Initial Scan", true, "For the first minute after an AutoSorter loads - you arrive through a portal, log in, or walk back into range - it rescans every second while the base around it is still loading, instead of waiting out the Scan Interval. Lets a crafting station show everything in your chests as soon as you reach it. It only rescans when something new has loaded, so the cost is small once the base is in.");
             ScanRadius = BindServerConfig("Dverger AutoSorter", "Scan Radius", 20f, "Radius (meters) around the AutoSorter in which crafting stations and chests are linked.", false, 1, 64);
             RangePerCore = BindServerConfig("Dverger AutoSorter", "Range Per Core", 25f, "Extra link radius (meters) added per inserted Surtling Core.", false, 0, 100);
             RequireCores = BindServerConfig("Dverger AutoSorter", "Require Cores", true, "When enabled, the AutoSorter only links stations/chests after at least one Surtling Core is inserted.");

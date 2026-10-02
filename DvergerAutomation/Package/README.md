@@ -66,6 +66,8 @@ registers itself with it properly rather than patching around it:
 
 - **The enchanting table draws from linked chests.** Runestones, shards and dust stay in storage
   instead of your inventory.
+- **Gear in linked chests can be worked on in place.** Enchanting, augmenting, etching or disenchanting
+  an item stored in a linked chest is saved back to that chest, so it does not revert.
 - **Auto-store leaves magic items alone** by default, for the same reason: a legendary would
   otherwise be filed into whatever chest holds the ordinary version. It stays in the deposit box instead.
   Turn on `Sort Magic Items` if you would rather have them stored.

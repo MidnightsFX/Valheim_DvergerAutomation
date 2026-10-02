@@ -73,6 +73,26 @@ namespace DvergerAutomation {
             return true;
         }
 
+        /// <summary>
+        /// Saves a change made to one of the container's items in place (Epic Loot's table enchanting or
+        /// etching it), when this client may write to it. Nothing else saves that: it is not a removal, so
+        /// no <c>Inventory.Changed</c> fires, and the next reload would bring the old item back.
+        ///
+        /// Unlike <see cref="TryAcquire"/> this does not reload the grid first. The item to save is the
+        /// instance in memory, and a reload would replace it with the chest's copy from before the change.
+        /// Skipping it is safe only because the change comes straight after a read that did reload it: Epic
+        /// Loot asks the provider again right before paying, and the provider syncs every chest it serves,
+        /// all on the same frame. Not asked for when someone else owns it - by then the change is already
+        /// made, and a handoff would arrive with their copy.
+        /// </summary>
+        internal static bool TryCommit(Container container) {
+            if (!IsSpendable(container)) { return false; }
+            Hold(container);
+            // Container.OnContainerChanged saves it; only the owner does, which IsSpendable checked.
+            container.GetInventory().Changed();
+            return true;
+        }
+
         /// <summary>Owned here and not open: can be spent from without asking anyone.</summary>
         internal static bool IsSpendable(Container container) {
             return IsLive(container) && container.m_nview.IsOwner() && !CraftFromStoragePatches.IsBusy(container);

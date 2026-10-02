@@ -12,6 +12,8 @@ namespace DvergerAutomation {
     /// enchanting table spends runestones, shards and dust out of linked chests. Epic Loot keeps its own
     /// provider-based accounting rather than going through <see cref="Inventory.CountItems"/>, so none of
     /// the Harmony patches in <see cref="CraftFromStoragePatches"/> reach it - this is the only route in.
+    /// The table can also enchant, augment or etch gear sitting in those chests, so a save handler
+    /// (<see cref="SaveItem"/>) writes each such change back to its chest.
     ///
     /// Inward: <see cref="IsProtectedItem"/> keeps enchanted gear in linked chests from being spent as
     /// plain crafting material. Vanilla consumption matches on <c>m_shared.m_name</c>, which an enchanted
@@ -47,6 +49,9 @@ namespace DvergerAutomation {
 
             if (Active) {
                 Logger.LogInfo($"[Autosorter] Registered inventory provider with Epic Loot {EpicLootAPI.EpicLoot.GetPluginVersion()}.");
+                if (!EpicLootAPI.EpicLoot.RegisterInventoryProviderSaveHandler(DvergerAutomation.PluginGUID, SaveItem)) {
+                    Logger.LogWarning("[Autosorter] This Epic Loot cannot hand back items it changes in place, so enchanting, augmenting or etching gear stored in a linked chest may be undone when the chest reloads. Update Epic Loot, or take the item out of the chest first.");
+                }
                 HookEnchantingUI();
             } else {
                 Logger.LogWarning("[Autosorter] Epic Loot is present but refused the inventory provider registration.");
@@ -254,6 +259,26 @@ namespace DvergerAutomation {
                 return take;
             }
             return 0;
+        }
+
+        // Epic Loot changed an item GetItems served, in place: enchanted, augmented, etched, reduced by a
+        // rune extract, stripped of a set or disenchanted. That rewrites the instance only; with nobody
+        // saving the chest, its next reload (CheckForChanges after anyone opens it, or the owner's copy
+        // arriving) would bring the old item back after the materials were spent. Epic Loot calls this on
+        // the frame of the change, straight after re-reading GetItems, so the chest is one this client owns.
+        private static bool SaveItem(ItemDrop.ItemData item) {
+            if (item == null) { return false; }
+            foreach (Container container in Pool()) {
+                if (container == null) { continue; }
+                Inventory inv = container.GetInventory();
+                if (inv == null || !inv.ContainsItem(item)) { continue; }
+                if (!StorageOwnership.TryCommit(container)) { return false; }
+                // Enchanting a plain item makes it protected (and disenchanting one frees it), which changes
+                // what the pool may spend.
+                ContainerNetwork.InvalidateItemCounts();
+                return true;
+            }
+            return false;
         }
 
         /// <summary>

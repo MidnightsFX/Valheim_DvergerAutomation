@@ -8,11 +8,13 @@ Epic Loot degrades to a logged warning and a no-op rather than a crash.
 | | |
 |---|---|
 | Upstream | `RandyKnapp/ValheimMods` -> `EpicLootAPI/EpicLootAPI/src` |
-| Commit    | `9083e916113c6213880b2ec4b199fd8e93d6da15` (2026-09-09) |
+| Commit    | `950b8284` plus the then-uncommitted `RegisterInventoryProviderSaveHandler` (2026-09-29); replace with the commit that lands it |
 | Local checkout | `Valheim_Stuff/Randy_Vapok_ValheimMods` |
 
 `README.md` in this folder is upstream's, and documents the whole API surface. DvergerAutomation
-only uses a small part of it - see `modules/CraftFromStorage/EpicLootIntegration.cs`.
+only uses a small part of it - see `modules/CraftFromStorage/EpicLootIntegration.cs`. It needs an Epic Loot
+new enough to have `RegisterInventoryProviderSaveHandler`; against an older one that call returns false and
+the rest of the integration works as before.
 
 ## Refreshing
 

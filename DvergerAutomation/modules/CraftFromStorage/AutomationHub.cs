@@ -51,6 +51,16 @@ namespace DvergerAutomation {
         private Coroutine vehicleLoop;
         private static int pieceMask = 0;
 
+        // For a while after a hub loads - a player arriving through a portal, logging in, or walking
+        // back into range - the chests around it are still streaming in: nearest to the player first,
+        // and on a server only as fast as their ZDOs arrive, which in a large base can take most of a
+        // minute. A scan in that time links only some of them, and at the normal interval the rest would
+        // not count until the next one. With Fast Initial Scan on, the hub rescans every second through
+        // this window instead, but only when the scene has gained or lost objects since its last look,
+        // which keeps it close to free once loading is done.
+        private const float InitialScanInterval = 1f;
+        private const float InitialScanWindow = 60f;
+
         private void Awake() {
             nview = GetComponent<ZNetView>();
             // The only Container under the piece is the deposit box; the root itself has none.
@@ -105,11 +115,26 @@ namespace DvergerAutomation {
         private IEnumerator ScanLoopRoutine() {
             // Let the world finish loading before the first scan.
             yield return new WaitForSeconds(2f);
+            // Seconds of the initial window used up, and the scene's object count at its last scan.
+            float initialElapsed = 0f;
+            int lastSceneObjects = -1;
             while (true) {
+                bool initial = ValConfig.FastInitialScan.Value && initialElapsed < InitialScanWindow;
                 if (ValConfig.AutomationEnabled.Value && Player.m_localPlayer != null) {
-                    Scan();
+                    if (!initial) {
+                        Scan();
+                    } else {
+                        int sceneObjects = ZNetScene.instance != null ? ZNetScene.instance.NrOfInstances() : 0;
+                        if (sceneObjects != lastSceneObjects) {
+                            Scan();
+                            lastSceneObjects = sceneObjects;
+                        }
+                        // A portal holds the player in its loading screen for several seconds while the
+                        // base streams in, so only time spent back in the world uses up the window.
+                        if (!Player.m_localPlayer.IsTeleporting()) { initialElapsed += InitialScanInterval; }
+                    }
                 }
-                yield return new WaitForSeconds(Mathf.Max(1f, ValConfig.ScanInterval.Value));
+                yield return new WaitForSeconds(initial ? InitialScanInterval : Mathf.Max(1f, ValConfig.ScanInterval.Value));
             }
         }
 

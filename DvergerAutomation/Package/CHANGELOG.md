@@ -1,3 +1,8 @@
+**0.10.1**
+- Fixed Epic Loot's enchanting table losing changes to gear stored in linked chests: enchanting, augmenting, etching or disenchanting an item there now saves it to its chest, instead of the chest undoing it a moment later after the materials were spent
+	- Needs an Epic Loot with inventory provider save handlers; with an older one the log warns once, and gear is best taken out of the chest before working on it
+- The Autosorter now picks up every chest in your base within moments of you arriving by portal or logging in, instead of some of them only after its next scan.
+
 **0.10.0**
 - Fixes buildable prefabs missing sounds/visual effects for damage, destruction and placement
 - The Autosorter's Deposit All is now **Deposit Selected**, with a **[C]** button beside it that opens a deposit filter
