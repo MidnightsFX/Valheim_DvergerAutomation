@@ -5,6 +5,7 @@ using HarmonyLib;
 using Jotunn.Entities;
 using Jotunn.Managers;
 using Jotunn.Utils;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
@@ -23,12 +24,15 @@ namespace DvergerAutomation
     // button is pressed, long after every plugin has loaded, and declaring AzuEPI opts this assembly into its
     // load-time rewriter, which reloads any dependent plugin from bytes to redirect its API stubs.
     [BepInDependency(EquipmentAndQuickSlotsGUID, BepInDependency.DependencyFlags.SoftDependency)]
+    // Soft, so that when MultiUserChest is installed it has loaded by the time Awake here asks whether
+    // it is there.
+    [BepInDependency(MultiUserChestIntegration.MultiUserChestGUID, BepInDependency.DependencyFlags.SoftDependency)]
     [NetworkCompatibility(CompatibilityLevel.EveryoneMustHaveMod, VersionStrictness.Minor)]
     internal class DvergerAutomation : BaseUnityPlugin
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "0.10.1";
+        public const string PluginVersion = "0.11.0";
         /// <summary>EquipmentAndQuickSlots' BepInEx plugin GUID, used for the soft dependency that orders load.</summary>
         internal const string EquipmentAndQuickSlotsGUID = "randyknapp.mods.equipmentandquickslots";
 
@@ -57,7 +61,7 @@ namespace DvergerAutomation
             // piece, which ConfigurePrefab reports rather than throwing.
             HopperStore.ConfigurePrefab(EmbeddedResourceBundle.LoadAsset<GameObject>("DA_ForgeHopper.prefab"));
 
-            HarmonyInstance = Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly(), harmonyInstanceId: PluginGUID);
+            ApplyPatches();
 
             LocalizationLoader.AddLocalizations();
             AddPieces();
@@ -67,6 +71,23 @@ namespace DvergerAutomation
         public void OnDestroy()
         {
             EpicLootIntegration.Unregister();
+        }
+
+        // What Harmony.PatchAll does, one class at a time, so the shared-chest patches can be left out
+        // when MultiUserChest is installed: it does that job itself, and both mods rewrite the same call
+        // in InventoryGui.UpdateContainer. The BepInEx pack's Harmony has no patch categories to do this
+        // with. Everything else those patches do is behind SharedChests.Active, which follows the
+        // server's setting at runtime.
+        private static void ApplyPatches() {
+            HarmonyInstance = new Harmony(PluginGUID);
+            bool sharedChests = !MultiUserChestIntegration.Present;
+            if (!sharedChests) {
+                Log.LogInfo("MultiUserChest is installed: shared chests are left to it.");
+            }
+            foreach (Type type in AccessTools.GetTypesFromAssembly(Assembly.GetExecutingAssembly())) {
+                if (!sharedChests && type.GetCustomAttribute<SharedChestPatchAttribute>() != null) { continue; }
+                HarmonyInstance.CreateClassProcessor(type).Patch();
+            }
         }
 
         public void AddPieces() {

@@ -178,7 +178,9 @@ namespace DvergerAutomation {
         ///
         /// Items only go into chests this client owns. A matching chest another player owns is asked for
         /// (see <see cref="StorageOwnership"/>), the items it would take stay in the box, and a retry files
-        /// them a moment later once the chest has been handed over.
+        /// them a moment later once the chest has been handed over. The exception is a chest another
+        /// player has open, which cannot be handed over: its owner is sent the items to file itself (see
+        /// <see cref="SendToOpenChest"/>).
         /// </summary>
         internal static SortResult Sort(AutomationHub hub, Player player, bool report = true) {
             SortResult result = default;
@@ -215,11 +217,22 @@ namespace DvergerAutomation {
                     if (remaining <= 0) { break; }
                     if (!IsSortTarget(hub, target)) { continue; }
                     Inventory dst = target.GetInventory();
-                    if (dst == null || CraftFromStoragePatches.IsBusy(target)) { continue; }
-                    if (!HasMatching(dst, item)) { continue; }
+                    if (dst == null || !HasMatching(dst, item)) { continue; }
 
                     // Checked before asking, so a chest with no room is not handed over for nothing.
                     if (FreeSpaceFor(dst, item) <= 0) { continue; }
+
+                    if (CraftFromStoragePatches.IsBusy(target)) {
+                        // Open in this player's own panel: left alone, as before.
+                        if (target.m_nview.IsOwner()) { continue; }
+                        // Open in another player's. It cannot change hands, so its owner files the items.
+                        int sent = SendToOpenChest(hub, src, item, target, remaining);
+                        if (sent <= 0) { continue; }
+                        remaining -= sent;
+                        stored += sent;
+                        usedChests.Add(target);
+                        continue;
+                    }
 
                     // Only the chest's owner may write to it. One someone else owns is asked for, and this
                     // item waits in the box for the retry.
@@ -258,6 +271,75 @@ namespace DvergerAutomation {
             result.Leftover = leftover;
             if (result.Waiting && leftover > 0) { StartRetry(hub); }
             return result;
+        }
+
+        // ---- filing into a chest someone has open ----------------------------------
+
+        /// <summary>
+        /// Sends up to <paramref name="amount"/> of <paramref name="item"/> to the owner of a chest that
+        /// is open in their panel, for them to put in (see <see cref="StorageOps"/>). Returns how many
+        /// left the box.
+        ///
+        /// This is the one place a sort lets go of an item before it has landed. The copy sent stays with
+        /// the request, and whatever the owner does not take - the chest filled up, changed hands, or
+        /// never answered - comes back to the box.
+        /// </summary>
+        private static int SendToOpenChest(AutomationHub hub, Inventory src, ItemDrop.ItemData item, Container target, int amount) {
+            // Cannot be rebuilt on the owner's side, so it would leave here and arrive nowhere.
+            if (item.m_dropPrefab == null) { return 0; }
+            amount = Mathf.Min(amount, Mathf.Min(item.m_stack, FreeSpaceFor(target.GetInventory(), item)));
+            if (amount <= 0) { return 0; }
+
+            ItemDrop.ItemData sent = item.Clone();
+            sent.m_stack = amount;
+            src.RemoveItem(item, amount);
+            // Never given up on early: an owner that is still there may have put it in, and only its
+            // answer says so.
+            StorageRpc.Send(target, StorageRpc.Op.Give,
+                args => ItemCodec.Write(args, new[] { sent }),
+                (status, reply, late) => OnFiled(hub, sent, status, reply, late),
+                giveUpOnOwnerChange: false);
+            return amount;
+        }
+
+        private static void OnFiled(AutomationHub hub, ItemDrop.ItemData sent, StorageRpc.Status status, ZPackage reply, bool late) {
+            // It went back in the box when no answer came. If the owner did put it in after all, it now
+            // exists twice - the price of never losing it.
+            if (late) { return; }
+
+            int accepted = 0;
+            if (status == StorageRpc.Status.Ok) {
+                accepted = sent.m_stack;
+            } else if (status == StorageRpc.Status.Partial && reply != null && reply.ReadInt() == 1) {
+                accepted = reply.ReadInt();
+            }
+            int back = sent.m_stack - accepted;
+            if (back <= 0) { return; }
+
+            ItemDrop.ItemData rest = sent.Clone();
+            rest.m_stack = back;
+            ReturnToBox(hub, rest);
+        }
+
+        // Back where it came from when that is still this client's to write; otherwise to the player.
+        private static void ReturnToBox(AutomationHub hub, ItemDrop.ItemData item) {
+            int left = item.m_stack;
+            Container box = hub != null ? hub.DepositBox : null;
+            if (box != null && box.m_nview != null && box.m_nview.IsValid() && box.m_nview.IsOwner()) {
+                StorageOwnership.Sync(box);
+                left -= AddMeasured(box.GetInventory(), item, left);
+            }
+            if (ValConfig.EnableDebugMode.Value) {
+                Logger.LogInfo($"[AutoStore] {item.m_stack} {item.m_shared.m_name} came back from an open chest; {left} did not fit in the box.");
+            }
+            if (left > 0) {
+                ItemDrop.ItemData rest = item.Clone();
+                rest.m_stack = left;
+                StorageReserve.HandToPlayer(rest);
+            }
+            if (Player.m_localPlayer != null) {
+                Player.m_localPlayer.Message(MessageHud.MessageType.Center, Localization.instance.Localize("$DA_Sorted_returned", item.m_stack.ToString()));
+            }
         }
 
         /// <summary>
@@ -354,6 +436,20 @@ namespace DvergerAutomation {
         /// it would either strand units or remove more from the source than ever arrived.
         /// </summary>
         internal static int MoveMeasured(Inventory from, ItemDrop.ItemData item, Inventory to, int amount) {
+            int landed = AddMeasured(to, item, amount);
+            if (landed <= 0) { return 0; }
+
+            // No yield or RPC between the add and this removal, so the units never exist twice.
+            from.RemoveItem(item, landed);
+            return landed;
+        }
+
+        /// <summary>
+        /// The adding half of <see cref="MoveMeasured"/>: puts up to <paramref name="amount"/> units of a
+        /// copy of <paramref name="item"/> into <paramref name="to"/> and returns how many landed. The item
+        /// handed in is left as it was, for a caller that holds it outside any inventory.
+        /// </summary>
+        internal static int AddMeasured(Inventory to, ItemDrop.ItemData item, int amount) {
             amount = Mathf.Min(amount, Mathf.Min(item.m_stack, FreeSpaceFor(to, item)));
             if (amount <= 0) { return 0; }
 
@@ -365,12 +461,7 @@ namespace DvergerAutomation {
 
             int before = to.CountItems(name, -1, matchWorldLevel: false);
             to.AddItem(slice);
-            int landed = to.CountItems(name, -1, matchWorldLevel: false) - before;
-            if (landed <= 0) { return 0; }
-
-            // No yield or RPC between the add and this removal, so the units never exist twice.
-            from.RemoveItem(item, landed);
-            return landed;
+            return Mathf.Max(0, to.CountItems(name, -1, matchWorldLevel: false) - before);
         }
 
         /// <summary>True when the chest already holds an item that would stack with this one.</summary>

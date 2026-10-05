@@ -575,6 +575,8 @@ namespace DvergerAutomation {
 
         private void UpdateVisuals() {
             if (nview == null || !nview.IsValid()) { return; }
+            // Rides this timer because it has to be repeated, not because it is a visual.
+            MultiUserChestIntegration.KeepExclusive(nview);
             int mask = GetCoreMask();
             if (CoreVisuals != null) {
                 for (int slot = 0; slot < CoreVisuals.Length && slot < SlotCount; ++slot) {

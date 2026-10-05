@@ -13,6 +13,8 @@ namespace DvergerAutomation {
     internal class ValConfig {
         public static ConfigFile cfg;
         public static ConfigEntry<bool> EnableDebugMode;
+        public static ConfigEntry<float> DebugStorageReplyDelay;
+        public static ConfigEntry<bool> DebugStorageDropReplies;
         public static ConfigEntry<bool> ShowStorageCounts;
         public static ConfigEntry<bool> CraftFromStorageEnabled;
         public static ConfigEntry<bool> DepositKeepFood;
@@ -36,6 +38,9 @@ namespace DvergerAutomation {
         public static ConfigEntry<bool> SortMagicItems;
         public static ConfigEntry<int> DepositBoxWidth;
         public static ConfigEntry<int> DepositBoxHeight;
+
+        // Shared chests - several players in one chest
+        public static ConfigEntry<bool> SharedChestsEnabled;
 
         // Dverger Hopper - smelter automation
         public static ConfigEntry<bool> HopperEnabled;
@@ -66,6 +71,17 @@ namespace DvergerAutomation {
                 new ConfigurationManagerAttributes { IsAdvanced = true }));
             EnableDebugMode.SettingChanged += Logger.EnableDebugLogging;
             Logger.CheckEnableDebugLogging();
+
+            // For reproducing a slow or vanished chest owner on one machine. Both act on this client's
+            // answers to other players' storage requests, and only while debug mode is on.
+            DebugStorageReplyDelay = Config.Bind("Client config", "Debug Storage Reply Delay", 0f,
+                new ConfigDescription("Debug mode only. Seconds this client waits before answering another player's request to take items out of, or put them into, a chest it owns. While the answer is held back the other player's chest panel can show a move twice.",
+                new AcceptableValueRange<float>(0f, 60f),
+                new ConfigurationManagerAttributes { IsAdvanced = true }));
+            DebugStorageDropReplies = Config.Bind("Client config", "Debug Storage Drop Replies", false,
+                new ConfigDescription("Debug mode only. This client carries out other players' storage requests but never answers them, as if it had left mid-request. Destroys items by design: anything it takes out of a chest for another player is in the answer it does not send. Use on a test world.",
+                null,
+                new ConfigurationManagerAttributes { IsAdvanced = true }));
 
             // Display only, so it stays client-side: crafting from storage works the same either way.
             ShowStorageCounts = Config.Bind("Client config", "Show Storage Counts", true,
@@ -114,14 +130,17 @@ namespace DvergerAutomation {
             RequireCores = BindServerConfig("Dverger AutoSorter", "Require Cores", true, "When enabled, the AutoSorter only links stations/chests after at least one Surtling Core is inserted.");
             // No SettingChanged hook needed: every hub relinks its boats and carts every couple of seconds,
             // and a switched-off type simply stops turning up.
-            CraftFromBoats = BindServerConfig("Dverger AutoSorter", "Craft From Boats", true, "Links the storage of boats (Karve, Longship, Drakkar) within the AutoSorter's range, so their holds feed crafting and building like any linked chest. A boat is skipped while someone else is aboard. Boats never receive auto-stored items.");
-            CraftFromCarts = BindServerConfig("Dverger AutoSorter", "Craft From Carts", true, "Links carts within the AutoSorter's range, so their contents feed crafting and building like any linked chest. A cart is skipped while someone else is pulling or riding it. Carts never receive auto-stored items.");
+            CraftFromBoats = BindServerConfig("Dverger AutoSorter", "Craft From Boats", true, "Links the storage of boats (Karve, Longship, Drakkar) within the AutoSorter's range, so their holds feed crafting and building like any linked chest, including while someone else is aboard. Boats never receive auto-stored items.");
+            CraftFromCarts = BindServerConfig("Dverger AutoSorter", "Craft From Carts", true, "Links carts within the AutoSorter's range, so their contents feed crafting and building like any linked chest, including while someone else is pulling or riding it. Carts never receive auto-stored items.");
             AutoStoreEnabled = BindServerConfig("Dverger AutoSorter", "Auto Store", true, "Enables the AutoSorter's deposit box: closing it distributes what you left inside into linked chests that already hold the same item. Anything with no home stays in the box.");
             SortMagicItems = BindServerConfig("Dverger AutoSorter", "Sort Magic Items", false, "When enabled, enchanted (Epic Loot) items are distributed like anything else. Off by default so a legendary is never filed away into a chest of ordinary gear.");
             // Defaults match the player's own inventory (Humanoid.m_inventory is a hard-coded 8x4), so one
             // full backpack always fits in a single trip.
             DepositBoxWidth = BindServerConfig("Dverger AutoSorter", "Deposit Box Width", AutoStore.DefaultWidth, $"Columns in the AutoSorter's deposit box. Capped at {AutoStore.MaxWidth}: the container panel does not scroll sideways, so wider grids spill off the screen.", false, AutoStore.MinSize, AutoStore.MaxWidth);
             DepositBoxHeight = BindServerConfig("Dverger AutoSorter", "Deposit Box Height", AutoStore.DefaultHeight, "Rows in the AutoSorter's deposit box. Rows beyond what the container panel shows scroll.", false, AutoStore.MinSize, AutoStore.MaxHeight);
+
+            // Read live wherever it matters, so a change takes effect without anything having to be told.
+            SharedChestsEnabled = BindServerConfig("Shared Chests", "Enabled", true, "Lets several players have the same chest, boat hold or cart open at once and move items in and out of it together. The first to open it works as normal; everyone after has their moves carried out by that player's game. Off means a chest someone has open reads as in use, as in vanilla. The AutoSorter's deposit box and the Hopper's storage are always one player at a time. Does nothing when MultiUserChest is installed, which takes over.");
 
             HopperEnabled = BindServerConfig("Dverger Hopper", "Enabled", true, "Enables the Dverger Hopper: it feeds ore and fuel from its own inventory into nearby smelters, charcoal kilns and blast furnaces, and collects what they produce back into that same inventory. Other processing stations (windmills, spinning wheels, eitr refineries, modded ones) can be turned on per Hopper from the [C] button beside its deposit button.");
             HopperInterval = BindServerConfig("Dverger Hopper", "Tick Interval", 4f, "Seconds between service passes. Each pass collects finished product, tops up fuel, then queues ore.", false, 1, 60);

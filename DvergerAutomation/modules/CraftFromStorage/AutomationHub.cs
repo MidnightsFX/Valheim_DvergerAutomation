@@ -363,6 +363,8 @@ namespace DvergerAutomation {
         // Reflects the inserted-core bitmask onto the per-slot visuals and the overall active visual.
         private void UpdateVisuals() {
             if (nview == null || !nview.IsValid()) { return; }
+            // Rides this timer because it has to be repeated, not because it is a visual.
+            MultiUserChestIntegration.KeepExclusive(nview);
             int mask = GetCoreMask();
             SetActiveSafe(Core1Visual, (mask & 1) != 0);
             SetActiveSafe(Core2Visual, (mask & 2) != 0);
@@ -403,8 +405,8 @@ namespace DvergerAutomation {
         private static readonly HashSet<Container> RebuildSeen = new HashSet<Container>();
 
         // Every boat hold / cart bed any hub links, mapped to the vehicle carrying it. IsBusy asks this
-        // for every pooled container every frame, so it is kept alongside the station cache rather than
-        // worked out from the hierarchy on demand.
+        // for a pooled container whenever one is about to be asked for, so it is kept alongside the
+        // station cache rather than worked out from the hierarchy on demand.
         private static readonly Dictionary<Container, MonoBehaviour> Carriers = new Dictionary<Container, MonoBehaviour>();
 
         // Also what both pool accessors hand back while the local player has craft-from-storage switched
@@ -543,7 +545,7 @@ namespace DvergerAutomation {
 
         /// <summary>
         /// <see cref="CountInPool"/> over only the chests this client owns, each brought up to date with
-        /// its ZDO first. What crafting can spend right now without waiting on a handoff.
+        /// its ZDO first. What crafting can spend right now without asking anyone.
         /// </summary>
         internal static int CountSpendableInPool(List<Container> pool, string name) {
             if (pool == null || pool.Count == 0) { return 0; }
@@ -563,13 +565,12 @@ namespace DvergerAutomation {
             counts.Clear();
             int worldLevel = Game.m_worldLevel;
             foreach (Container container in pool) {
-                if (container == null) { continue; }
-                // A chest someone has open cannot be spent from without breaking their session (see
-                // CraftFromStoragePatches.IsBusy), so it must not read as stock either. Rebuilt every
-                // frame, so it drops out and comes back as the chest is opened and closed.
-                if (CraftFromStoragePatches.IsBusy(container)) { continue; }
+                if (container == null || container.m_nview == null || !container.m_nview.IsValid()) { continue; }
+                // A chest someone has open, or a boat with someone aboard, still counts as stock: it
+                // cannot change hands (see CraftFromStoragePatches.IsBusy), but its owner can take the
+                // materials out for this client (see StorageReserve).
                 if (spendableOnly) {
-                    if (!StorageOwnership.IsSpendable(container)) { continue; }
+                    if (!StorageOwnership.CanSpendLocally(container)) { continue; }
                     StorageOwnership.Sync(container);
                 }
                 Inventory inv = container.GetInventory();

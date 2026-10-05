@@ -46,7 +46,7 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// True when a chest should be left alone because someone has it open. Taking ownership out from
+        /// True when a chest must not change hands because someone has it open. Taking ownership out from
         /// under them blanks their container panel, and their <c>m_inUse</c> can then never clear, because
         /// <c>Container.SetInUse</c> is itself owner-gated - and a stuck <c>m_inUse</c> blocks
         /// <c>Container.Load</c>, so their copy of the chest stops updating for good. <c>IsInUse()</c> only
@@ -57,6 +57,11 @@ namespace DvergerAutomation {
         /// A boat's hold or a cart's bed is also busy while someone else is aboard, pulling or riding it:
         /// the hold shares the vehicle's ZDO, so taking it takes the whole vehicle (see
         /// <see cref="VehicleStorage.InUse"/>).
+        ///
+        /// The Hopper and Epic Loot's table leave a busy chest alone altogether. Crafting and building do
+        /// not: they count its stock, and have its owner take the materials out for them (see
+        /// <see cref="StorageReserve"/>). Auto-store likewise sends a chest that is open in someone
+        /// else's panel its items through the owner.
         /// </summary>
         internal static bool IsBusy(Container container) {
             if (container.IsInUse()) { return true; }
@@ -90,26 +95,26 @@ namespace DvergerAutomation {
         /// Removes up to <paramref name="amount"/> of <paramref name="name"/> across the pool and returns
         /// how many were actually taken (Epic Loot's inventory provider contract requires the count).
         ///
-        /// Only from chests this client owns. One owned by someone else is asked for instead (see
-        /// <see cref="StorageOwnership"/>) and skipped; the checks in front of crafting and building make
-        /// sure the owned ones already cover the amount, so in practice nothing is skipped here.
+        /// Only from chests this client owns, which includes one it has open itself. One owned by someone
+        /// else is asked for instead when it can be handed over (see <see cref="StorageOwnership"/>) and
+        /// skipped; the checks in front of crafting and building make sure the owned ones, together with
+        /// what <see cref="StorageReserve"/> already fetched, cover the amount, so in practice nothing is
+        /// skipped here.
         /// </summary>
         internal static int RemoveFromContainers(List<Container> pool, string name, int amount, int itemQuality) {
             int removed = 0;
             foreach (Container container in pool) {
                 if (amount <= 0) { break; }
                 if (container == null) { continue; }
-                // Never spend out of a chest someone has open: taking it over wrecks their session (see
-                // IsBusy). The aggregate skips the same chests, so availability never promises its stock.
-                if (IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null || !Holds(inv, name, itemQuality)) { continue; }
                 // Reloads the grid too, so the items walked below are the chest's current ones.
-                if (!StorageOwnership.TryAcquire(container)) { continue; }
+                if (!StorageOwnership.TryAcquireForSpend(container)) { continue; }
 
                 // Removed per instance rather than by name so protected items can be stepped over; vanilla's
                 // Inventory.RemoveItem(string, ...) would happily eat them. GetAllItems hands back the live
                 // backing list and emptied stacks drop out of it, so walk it backwards.
+                int before = removed;
                 List<ItemDrop.ItemData> items = inv.GetAllItems();
                 for (int i = items.Count - 1; i >= 0 && amount > 0; --i) {
                     ItemDrop.ItemData item = items[i];
@@ -120,6 +125,8 @@ namespace DvergerAutomation {
                     amount -= take;
                     removed += take;
                 }
+                // It may be the chest this player has open, with one of those stacks on the cursor.
+                if (removed > before) { StorageOps.GuardOwnerGui(container); }
             }
             // Chest contents just changed: the frame-memoized aggregate is now stale.
             if (removed > 0) { ContainerNetwork.InvalidateItemCounts(); }
@@ -133,6 +140,142 @@ namespace DvergerAutomation {
                 if (Matches(item, name, itemQuality)) { return true; }
             }
             return false;
+        }
+
+        /// <summary>
+        /// What the pool can put towards an ingredient: the stock of every linked chest, plus whatever
+        /// has already been fetched out of them for the action in hand. Without the second half an
+        /// ingredient would read as missing in the moment between leaving its chest and being spent.
+        /// </summary>
+        internal static int CountAvailable(List<Container> pool, string name) {
+            return ContainerNetwork.CountInPool(pool, name) + StorageReserve.Count(name);
+        }
+
+        /// <summary>
+        /// Whether the craft the panel is set up for has to wait on storage. The quality and multiplier
+        /// are the ones <c>InventoryGui.DoCrafting</c> hands <c>ConsumeResources</c>.
+        /// </summary>
+        internal static bool CraftMustWait(InventoryGui gui, Player player) {
+            if (player == null || player != Player.m_localPlayer) { return false; }
+            Recipe recipe = gui.m_craftRecipe;
+            // A one-of-these recipe spends only the ingredient the player carries (singleReqItem).
+            if (recipe == null || recipe.m_requireOnlyOneIngredient) { return false; }
+            if (player.NoCostCheat() || ZoneSystem.instance.GetGlobalKey(GlobalKeys.NoCraftCost)) { return false; }
+
+            CraftingStation station = player.GetCurrentCraftingStation();
+            int quality = gui.m_craftUpgradeItem == null ? 1 : gui.m_craftUpgradeItem.m_quality + 1;
+            int multiplier = gui.m_multiCrafting ? gui.m_multiCraftAmount : 1;
+            return StorageOwnership.MustWait(player, ContainerNetwork.GetContainersForStation(station), recipe.m_resources, station, quality, multiplier);
+        }
+    }
+
+    /// <summary>
+    /// Keeps a finished craft bar full while the craft's materials are still on their way from another
+    /// player's chest, instead of failing the craft and making the player start the bar again.
+    ///
+    /// <c>InventoryGui.UpdateRecipe</c> runs the bar: once it fills it calls <c>DoCrafting</c> and resets
+    /// the timer, whatever DoCrafting did. So when the craft has to wait, DoCrafting is skipped and the
+    /// timer is put back to where the frame found it. Vanilla then fills the bar and tries again on the
+    /// next frame, and the frame after, until the materials are in or patience runs out.
+    /// </summary>
+    internal static class CraftHold {
+        // A round trip to another player is a fraction of this. Longer means nobody is answering.
+        private const float Patience = 3f;
+
+        private static bool inUpdateRecipe;
+        private static float timerBefore;
+        private static int heldFrame = -1;
+        private static float since;
+
+        internal static void Enter(InventoryGui gui) {
+            inUpdateRecipe = true;
+            timerBefore = gui.m_craftTimer;
+        }
+
+        internal static void Exit(InventoryGui gui) {
+            inUpdateRecipe = false;
+            if (heldFrame == Time.frameCount) { gui.m_craftTimer = timerBefore; }
+        }
+
+        /// <summary>
+        /// Called when the craft has to wait: true while it should be held, false once it should be
+        /// given up on. Only a craft run from the bar can be held - anything else calling DoCrafting
+        /// has no timer to put back.
+        /// </summary>
+        internal static bool KeepWaiting() {
+            if (!inUpdateRecipe) { return false; }
+            // Not carrying on from the frame before, so this is a new wait.
+            if (heldFrame != Time.frameCount - 1) { since = Time.time; }
+            if (Time.time - since > Patience) { return false; }
+            heldFrame = Time.frameCount;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Finishes a Hammer placement that had to wait for materials from another player's chest.
+    ///
+    /// The click that could not be paid for is turned down, as it has to be - vanilla places the piece
+    /// before it spends. Once the materials are in, the click is pressed again on the player's behalf by
+    /// setting the time vanilla's own buffered-click check reads, so the placement goes through vanilla's
+    /// whole path: stamina, the ghost's validity at that moment, durability, skill. Only for the piece
+    /// that was clicked, only while it is still selected, and only for a short while.
+    /// </summary>
+    internal static class PlaceRetry {
+        private const float Patience = 3f;
+
+        private static Piece piece;
+        private static float until;
+        // The frame the gate in front of TryPlacePiece last turned this piece down, and the frame a press
+        // was last made for it.
+        private static int blockedFrame = -1;
+        private static int pressedFrame = -1;
+
+        /// <summary>The gate turned a placement down for want of materials that are on their way.</summary>
+        internal static void Arm(Piece wanted) {
+            blockedFrame = Time.frameCount;
+            if (piece == wanted) { return; }
+            piece = wanted;
+            until = Time.time + Patience;
+            pressedFrame = -1;
+        }
+
+        internal static void Disarm() {
+            piece = null;
+            pressedFrame = -1;
+        }
+
+        /// <summary>Run ahead of <c>Player.UpdatePlacement</c>, which is what reads the press.</summary>
+        internal static void Tick(Player player) {
+            if (piece == null) { return; }
+            if (!player.InPlaceMode() || player.GetSelectedPiece() != piece) {
+                Disarm();
+                return;
+            }
+
+            // Vanilla sets the time far into the past when it takes a press. One it took without coming
+            // back to the gate was stopped by something else - no stamina, a ghost that is no longer valid -
+            // and vanilla has said so; pressing again would only repeat it every frame.
+            if (pressedFrame >= 0 && player.m_placePressedTime < 0f) {
+                if (blockedFrame != pressedFrame) {
+                    Disarm();
+                    return;
+                }
+                pressedFrame = -1;
+            }
+
+            if (Time.time > until) {
+                Disarm();
+                player.Message(MessageHud.MessageType.Center, "$DA_storage_waiting");
+                return;
+            }
+            List<Container> pool = ContainerNetwork.GetContainersNearPoint(player.transform.position);
+            if (StorageOwnership.MustWait(player, pool, piece.m_resources, null, 0, 1)) { return; }
+
+            // Vanilla takes the press on the first frame its placement delay allows; until then it is
+            // pressed afresh each frame. The gate disarms this when it lets the piece through.
+            player.m_placePressedTime = Time.time;
+            pressedFrame = Time.frameCount;
         }
     }
 
@@ -162,7 +305,7 @@ namespace DvergerAutomation {
                     int count = __instance.m_inventory.CountItems(name, quality);
                     if (count > playerBest) { playerBest = count; }
                 }
-                int total = playerBest + ContainerNetwork.CountInPool(pool, name);
+                int total = playerBest + CraftFromStoragePatches.CountAvailable(pool, name);
 
                 if (requireOne) {
                     if (total >= needed) { __result = true; return; }
@@ -225,7 +368,7 @@ namespace DvergerAutomation {
             if (player == null || player != Player.m_localPlayer) { return; }
 
             string name = req.m_resItem.m_itemData.m_shared.m_name;
-            int stored = ContainerNetwork.CountInPool(pool, name);
+            int stored = CraftFromStoragePatches.CountAvailable(pool, name);
             if (stored <= 0) { return; }
 
             Transform amountTransform = elementRoot.Find("res_amount");
@@ -274,7 +417,7 @@ namespace DvergerAutomation {
             foreach (Piece.Requirement resource in piece.m_resources) {
                 if (resource.m_resItem == null || resource.m_amount <= 0) { continue; }
                 string name = resource.m_resItem.m_itemData.m_shared.m_name;
-                int total = __instance.m_inventory.CountItems(name) + ContainerNetwork.CountInPool(pool, name);
+                int total = __instance.m_inventory.CountItems(name) + CraftFromStoragePatches.CountAvailable(pool, name);
                 if (total < resource.m_amount) { return; }
             }
 
@@ -283,29 +426,19 @@ namespace DvergerAutomation {
     }
 
     // ---- waiting for storage: in front of station crafting and Hammer building ----
-    // Availability counts every linked chest, but only chests this client owns can be spent from (see
-    // StorageOwnership). The remaining gap is closed here, before the action: if part of what it needs is
-    // still in another player's chest, the action is held back, that chest is asked for, and the player
-    // tries again a moment later. Checked this early because consumption itself cannot fail - vanilla
-    // hands out the crafted item or places the piece and only then spends.
+    // Availability counts every linked chest, but only what is in chests this client owns, or has already
+    // been fetched out of another player's, can be spent (see StorageOwnership and StorageReserve). The
+    // remaining gap is closed here, before the action: if part of what it needs is still elsewhere, it is
+    // sent for and the action waits - the craft bar stays full, the Hammer click is finished a moment
+    // later. Checked this early because consumption itself cannot fail - vanilla hands out the crafted
+    // item or places the piece and only then spends.
 
     [HarmonyPatch(typeof(InventoryGui), "DoCrafting")]
     internal static class InventoryGui_DoCrafting_Patch {
         private static bool Prefix(InventoryGui __instance, Player player) {
             try {
-                if (player == null || player != Player.m_localPlayer) { return true; }
-                Recipe recipe = __instance.m_craftRecipe;
-                // A one-of-these recipe spends only the ingredient the player carries (singleReqItem).
-                if (recipe == null || recipe.m_requireOnlyOneIngredient) { return true; }
-                if (player.NoCostCheat() || ZoneSystem.instance.GetGlobalKey(GlobalKeys.NoCraftCost)) { return true; }
-
-                // The quality and multiplier DoCrafting hands ConsumeResources.
-                CraftingStation station = player.GetCurrentCraftingStation();
-                int quality = __instance.m_craftUpgradeItem == null ? 1 : __instance.m_craftUpgradeItem.m_quality + 1;
-                int multiplier = __instance.m_multiCrafting ? __instance.m_multiCraftAmount : 1;
-                if (!StorageOwnership.MustWait(player, ContainerNetwork.GetContainersForStation(station), recipe.m_resources, station, quality, multiplier)) {
-                    return true;
-                }
+                if (!CraftFromStoragePatches.CraftMustWait(__instance, player)) { return true; }
+                if (CraftHold.KeepWaiting()) { return false; }
                 player.Message(MessageHud.MessageType.Center, "$DA_storage_waiting");
                 return false;
             } catch (System.Exception ex) {
@@ -316,24 +449,80 @@ namespace DvergerAutomation {
         }
     }
 
+    [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.UpdateRecipe))]
+    internal static class InventoryGui_UpdateRecipe_CraftHold_Patch {
+        private static void Prefix(InventoryGui __instance) { CraftHold.Enter(__instance); }
+
+        private static void Postfix(InventoryGui __instance) { CraftHold.Exit(__instance); }
+    }
+
+    [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.OnCraftPressed))]
+    internal static class InventoryGui_OnCraftPressed_Patch {
+        // Sends for the materials as the bar starts rather than as it fills, so most of the round trip is
+        // over by the time they are needed. A postfix, and only once the timer is running: vanilla turns
+        // the press down for a full pack and the like, and nothing should be fetched for a craft that
+        // never started. The bar alone cannot be counted on to cover the wait - at high skill it is well
+        // under a second - which is what CraftHold is for.
+        private static void Postfix(InventoryGui __instance) {
+            if (__instance.m_craftTimer < 0f) { return; }
+            try {
+                CraftFromStoragePatches.CraftMustWait(__instance, Player.m_localPlayer);
+            } catch (System.Exception ex) {
+                Logger.LogError($"Craft from storage: sending for storage as the craft started failed: {ex}");
+            }
+        }
+    }
+
     [HarmonyPatch(typeof(Player), nameof(Player.TryPlacePiece))]
     internal static class Player_TryPlacePiece_Patch {
         private static bool Prefix(Player __instance, Piece piece, ref bool __result) {
             try {
                 if (__instance == null || __instance != Player.m_localPlayer || piece == null) { return true; }
-                // Anything wrong with the placement itself is vanilla's to report.
+                // Anything wrong with the placement itself is vanilla's to report. Vanilla works the status
+                // out afresh as its first step, so the same is done here: what the player carries at this
+                // point is last frame's, and a ghost that has only just turned valid would otherwise walk
+                // straight past this check and be placed unpaid.
+                __instance.UpdatePlacementGhost(flashGuardStone: false);
                 if (__instance.m_placementStatus != Player.PlacementStatus.Valid) { return true; }
                 if (__instance.m_noPlacementCost || ZoneSystem.instance.GetGlobalKey(piece.FreeBuildKey())) { return true; }
 
                 // Building happens away from a station, so this is the pool ConsumeResources will use.
                 List<Container> pool = ContainerNetwork.GetContainersNearPoint(__instance.transform.position);
-                if (!StorageOwnership.MustWait(__instance, pool, piece.m_resources, null, 0, 1)) { return true; }
-                __instance.Message(MessageHud.MessageType.Center, "$DA_storage_waiting");
-                __result = false;
-                return false;
+                switch (StorageOwnership.CheckStorage(__instance, pool, piece.m_resources, null, 0, 1)) {
+                    case StorageReserve.Readiness.Covered:
+                        PlaceRetry.Disarm();
+                        return true;
+                    case StorageReserve.Readiness.Pending:
+                        // No message yet: PlaceRetry finishes the click once the materials are in, and only
+                        // says so if they never come.
+                        PlaceRetry.Arm(piece);
+                        __result = false;
+                        return false;
+                    default:
+                        // Vanilla already decided the materials were there, before this ran, and will not
+                        // look again. They are not: its count was from before a chest was brought up to
+                        // date.
+                        PlaceRetry.Disarm();
+                        __instance.Message(MessageHud.MessageType.Center, "$msg_missingrequirement");
+                        __result = false;
+                        return false;
+                }
             } catch (System.Exception ex) {
                 Logger.LogError($"Craft from storage: checking storage before building failed: {ex}");
                 return true;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Player), nameof(Player.UpdatePlacement))]
+    internal static class Player_UpdatePlacement_PlaceRetry_Patch {
+        private static void Prefix(Player __instance) {
+            if (__instance != Player.m_localPlayer) { return; }
+            try {
+                PlaceRetry.Tick(__instance);
+            } catch (System.Exception ex) {
+                PlaceRetry.Disarm();
+                Logger.LogError($"Craft from storage: finishing a placement that waited on storage failed: {ex}");
             }
         }
     }
@@ -352,7 +541,10 @@ namespace DvergerAutomation {
             if (pool.Count == 0) { return; }
 
             foreach (KeyValuePair<string, int> shortfall in CraftFromStoragePatches.Shortfalls(__instance, requirements, station, qualityLevel, itemQuality, multiplier)) {
-                CraftFromStoragePatches.RemoveFromContainers(pool, shortfall.Key, shortfall.Value, itemQuality);
+                // What was fetched for this action first - it has already left its chest - then the chests
+                // this client owns.
+                int rest = shortfall.Value - StorageReserve.Spend(shortfall.Key, shortfall.Value, itemQuality);
+                if (rest > 0) { CraftFromStoragePatches.RemoveFromContainers(pool, shortfall.Key, rest, itemQuality); }
             }
             // Returns void: vanilla then removes the remainder (what the player actually holds) normally.
         }

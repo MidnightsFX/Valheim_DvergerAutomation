@@ -52,12 +52,45 @@ But can be upgraded with up to 6 surtling cores. Configurably 1 core is required
 
 A chest is only linked if you could open it yourself.
 
-A chest that someone - you or another player - currently has open is left alone until it is closed:
-its contents are not counted, shown, or spent while it is open, so nobody's chest panel is pulled out
-from under them.
+A chest that another player has open stays theirs - it is never pulled out from under them. Crafting
+and building still count what is in it and can spend from it: the player who has it open takes the
+materials out on your behalf and simply sees them leave. The same goes for a boat with someone aboard
+and a cart someone is pulling. Materials that were fetched but not used go back to the chest they
+came from.
+
+Auto-store files into an open chest the same way: the player who has it open puts the items in, and
+anything that no longer fits comes back to the deposit box.
+
+The Furnace Hopper and the Epic Loot enchanting table are more careful: they leave an open chest
+alone until it is closed.
 
 Auto-store is stricter still: it only ever files items into public chests, so your own Private
 chests can feed crafting but never receive sorted goods.
+
+### Shared chests
+
+Several players can have the same chest, boat hold or cart open at once and move items in and out of
+it together. The first player to open it works exactly as in vanilla. Everyone who joins after has
+their moves carried out by that player's game, so there is only ever one copy of the chest being
+written. Your own moves show straight away and settle a moment later.
+
+- The Autosorter's deposit box and the Furnace Hopper's storage stay one player at a time, because
+  sorting and feeding are done by whoever has them open.
+- Buttons other mods add to the chest screen (quick stack, sort) act for the player who opened the
+  chest first. For anyone who joined after they do nothing, rather than risk losing or duplicating items.
+- The server setting `Enabled` under `Shared Chests` turns it off.
+
+Credit to [MultiUserChest](https://github.com/MSchmoecker/No-Chest-Block) by MSchmoecker, which
+showed that a chest could be shared this way and was the reference for how one should behave. The
+version here is written separately and works differently underneath: it runs on the same owner
+requests as crafting from storage, notices when the player holding a chest has left and puts back
+whatever was on its way, and refuses a move it cannot carry out safely instead of letting it through.
+
+### MultiUserChest support (optional)
+
+If MultiUserChest is installed it takes over shared chests and this mod's own version steps aside.
+Crafting and building still draw from a chest however many players have it open, and the Autosorter's
+deposit box and the Furnace Hopper's storage still stay one player at a time.
 
 ### Epic Loot support (optional)
 

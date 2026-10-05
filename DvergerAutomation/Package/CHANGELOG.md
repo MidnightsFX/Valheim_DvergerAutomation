@@ -1,3 +1,11 @@
+**0.11.0**
+- Several players can now have the same chest open at once and move items in and out of it together.
+- Crafting and building can now use materials from a chest another player has open, and from a boat or cart someone else is using.
+- Auto-store can now file items into a chest another player has open.
+- Crafting and building wait a moment for materials another player is holding instead of asking you to try again.
+- Works alongside MultiUserChest, which takes over shared chests when it is installed.
+- Hardened chests against showing out-of-date contents right after they change hands.
+
 **0.10.1**
 - Fixed Epic Loot's enchanting table losing changes to gear stored in linked chests: enchanting, augmenting, etching or disenchanting an item there now saves it to its chest, instead of the chest undoing it a moment later after the materials were spent
 	- Needs an Epic Loot with inventory provider save handlers; with an older one the log warns once, and gear is best taken out of the chest before working on it
