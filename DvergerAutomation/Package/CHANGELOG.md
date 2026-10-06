@@ -1,3 +1,6 @@
+**0.11.1**
+- The deposit button on the Autosorter and Hopper can now be pressed with a controller, using the same button as Place stacks.
+
 **0.11.0**
 - Several players can now have the same chest open at once and move items in and out of it together.
 - Crafting and building can now use materials from a chest another player has open, and from a boat or cart someone else is using.

@@ -20,8 +20,9 @@ namespace DvergerAutomation {
     ///    furnace melts. There is no sort step; the Hopper feeds itself from what is inside it. Its [C]
     ///    (<see cref="HopperTargetPanel"/>) picks which stations it services, not what is deposited.
     ///
-    /// The button takes over the slot vanilla's Place stacks button occupies, and hides it for as long
-    /// as one of our containers is open. Ordinary chests are untouched and keep Place stacks.
+    /// The button takes over the slot vanilla's Place stacks button occupies, and its controller binding,
+    /// and hides it for as long as one of our containers is open. Ordinary chests are untouched and keep
+    /// Place stacks.
     /// </summary>
     internal static class DepositAll {
         private const string ObjectName = "DA_DepositAllButton";
@@ -50,7 +51,7 @@ namespace DvergerAutomation {
             if (gui == null || gui.m_container == null || gui.m_stackAllButton == null) { return; }
             if (gui.m_container.Find(ObjectName) != null) { return; }
 
-            GameObject go = CloneStackAllButton(gui, ObjectName, OnClick);
+            GameObject go = CloneStackAllButton(gui, ObjectName, OnClick, keepGamepad: true);
 
             // The template's rect is deliberately left exactly as cloned. Place stacks is a direct child
             // of the same Container panel, so the copy lands precisely on top of it - which is the point:
@@ -65,11 +66,13 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// A pointer-only copy of Place stacks, parented into the container panel, hidden, and calling
+        /// A copy of Place stacks, parented into the container panel, hidden, and calling
         /// <paramref name="onClick"/>. Shared with the filter's [C] button so both carry the vanilla
-        /// button sprite, label styling, click sound and a tooltip.
+        /// button sprite, label styling, click sound and a tooltip. With <paramref name="keepGamepad"/>
+        /// the copy also keeps Place stacks' controller binding and hint glyph; otherwise it is
+        /// pointer-only.
         /// </summary>
-        internal static GameObject CloneStackAllButton(InventoryGui gui, string name, UnityEngine.Events.UnityAction onClick) {
+        internal static GameObject CloneStackAllButton(InventoryGui gui, string name, UnityEngine.Events.UnityAction onClick, bool keepGamepad = false) {
             // worldPositionStays false: the two-argument overload keeps the clone's world transform by
             // rewriting its local scale and position, which is never what a UI element parented into a
             // different panel wants.
@@ -77,12 +80,20 @@ namespace DvergerAutomation {
             go.name = name;
             go.SetActive(false);
 
-            // Take All and Place stacks both bind the right stick; a third claimant would fight them for
-            // it, and the hint glyph advertises a button that does nothing here. Pointer-only.
+            // Place stacks binds the right stick (Take All has the left) and owns the hint glyph that
+            // advertises it. The deposit button keeps both: it takes over Place stacks' slot and Refresh
+            // hides the original while ours is up, and a hidden UIGamePad gets no Update, so the binding
+            // is handed across rather than contested. Anything else cloned from here is on screen
+            // alongside the deposit button and would be a second claimant to the same stick.
             UIGamePad pad = go.GetComponent<UIGamePad>();
-            if (pad != null) { Object.Destroy(pad); }
-            foreach (Transform child in go.transform) {
-                if (child.name.StartsWith("gamepad_hint")) { Object.Destroy(child.gameObject); }
+            GameObject hint = null;
+            if (keepGamepad) {
+                hint = pad != null ? pad.m_hint : null;
+            } else {
+                if (pad != null) { Object.Destroy(pad); }
+                foreach (Transform child in go.transform) {
+                    if (child.name.StartsWith("gamepad_hint")) { Object.Destroy(child.gameObject); }
+                }
             }
 
             // Instantiate carries serialized listeners only, and InventoryGui adds OnStackAll at runtime,
@@ -91,7 +102,7 @@ namespace DvergerAutomation {
             click.onClick.RemoveAllListeners();
             click.onClick.AddListener(onClick);
 
-            DetachFromLocalization(go);
+            DetachFromLocalization(go, hint);
             go.transform.SetAsLastSibling();
             AddTooltip(gui, go);
             return go;
@@ -105,10 +116,15 @@ namespace DvergerAutomation {
         /// re-applies cached originals to all visible labels, overwriting whatever we wrote there.
         /// A label with no '$' in it is never cached, and dropping any entry already made covers the
         /// case where Start has run.
+        ///
+        /// A kept gamepad hint (<paramref name="hint"/>) is left alone: its "$KEY_RStick" is meant to go
+        /// through that machinery, which turns it into the controller's glyph and swaps the glyph when
+        /// the input layout changes, exactly as it does for the original.
         /// </summary>
-        private static void DetachFromLocalization(GameObject go) {
+        private static void DetachFromLocalization(GameObject go, GameObject hint) {
             Localization loc = Localization.instance;
             foreach (TMP_Text text in go.GetComponentsInChildren<TMP_Text>(includeInactive: true)) {
+                if (hint != null && text.transform.IsChildOf(hint.transform)) { continue; }
                 if (text.text != null && text.text.Contains("$")) { text.text = ""; }
                 loc?.RemoveTextFromCache(text);
             }
