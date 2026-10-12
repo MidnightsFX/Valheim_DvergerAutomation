@@ -32,7 +32,7 @@ namespace DvergerAutomation
     {
         public const string PluginGUID = "MidngightsFX.DvergerAutomation";
         public const string PluginName = "DvergerAutomation";
-        public const string PluginVersion = "0.11.1";
+        public const string PluginVersion = "0.12.0";
         /// <summary>EquipmentAndQuickSlots' BepInEx plugin GUID, used for the soft dependency that orders load.</summary>
         internal const string EquipmentAndQuickSlotsGUID = "randyknapp.mods.equipmentandquickslots";
 
@@ -56,10 +56,26 @@ namespace DvergerAutomation
             // Finish the deposit box before the piece is registered, let alone instantiated:
             // Container.Awake reads those fields to build its inventory and bind its network view.
             // LoadAsset hands back a cached instance, so this is the same object AddPieces then registers.
-            AutoStore.ConfigureDepositPrefab(EmbeddedResourceBundle.LoadAsset<GameObject>("DA_Autosorter.prefab"));
+            GameObject autosorter = EmbeddedResourceBundle.LoadAsset<GameObject>("DA_Autosorter.prefab");
+            AutoStore.ConfigureDepositPrefab(autosorter);
             // Same deal for the hopper's single shared store. Null until the rebuilt bundle carries the
             // piece, which ConfigurePrefab reports rather than throwing.
-            HopperStore.ConfigurePrefab(EmbeddedResourceBundle.LoadAsset<GameObject>("DA_ForgeHopper.prefab"));
+            GameObject hopper = EmbeddedResourceBundle.LoadAsset<GameObject>("DA_ForgeHopper.prefab");
+            HopperStore.ConfigurePrefab(hopper);
+            MakeWeatherproof(autosorter);
+            MakeWeatherproof(hopper);
+            // Both null until the bundle is rebuilt with the Seeking Table: the piece then skips itself, and
+            // the line falls back to the vanilla workbench one.
+            MakeWeatherproof(EmbeddedResourceBundle.LoadAsset<GameObject>("DA_SeekingTable.prefab"));
+            // The Grinder's results chest needs the same finishing as the Hopper's store.
+            GameObject grinder = EmbeddedResourceBundle.LoadAsset<GameObject>("DA_Grinder.prefab");
+            GrinderStore.ConfigurePrefab(grinder);
+            MakeWeatherproof(grinder);
+            // And the Lighter's fuel tank. Null until the bundle is rebuilt with the Lighter.
+            GameObject lighter = EmbeddedResourceBundle.LoadAsset<GameObject>("DA_Lighter.prefab");
+            LighterStore.ConfigurePrefab(lighter);
+            MakeWeatherproof(lighter);
+            RetrievalBeam.Register(EmbeddedResourceBundle.LoadAsset<GameObject>($"{RetrievalBeam.PrefabName}.prefab"));
 
             ApplyPatches();
 
@@ -90,6 +106,15 @@ namespace DvergerAutomation
             }
         }
 
+        // Despite the name, WearNTear.m_noRoofWear = true means "wears when it has NO roof": uncovered and
+        // wet (rain, or standing in water) it loses 5 health a minute down to half. Vanilla turns it off for
+        // the smelter, blast furnace, kiln, windmill and every chest, which these machines sit beside. Set
+        // here as well as in the Unity prefabs so an older bundle still gets it.
+        private static void MakeWeatherproof(GameObject prefab) {
+            WearNTear wnt = prefab != null ? prefab.GetComponent<WearNTear>() : null;
+            if (wnt != null) { wnt.m_noRoofWear = false; }
+        }
+
         public void AddPieces() {
             JotunnPiece.JotunnBuildPiece DA_AutSorter = new JotunnPiece.JotunnBuildPiece();
             DA_AutSorter.Name = "Dverger AutoSorter";
@@ -118,6 +143,48 @@ namespace DvergerAutomation
                 { new JotunnPiece.PieceCost() { prefab = "Coal", amount = 20, refundable = true } }
             };
             JotunnPiece.RegisterJotunnPiece(DA_Hopper);
+
+            JotunnPiece.JotunnBuildPiece DA_SeekingTable = new JotunnPiece.JotunnBuildPiece();
+            DA_SeekingTable.Name = "Dverger Seeking Table";
+            DA_SeekingTable.Prefab = "DA_SeekingTable";
+            DA_SeekingTable.Sprite = "DA_SeekingTable";
+            DA_SeekingTable.Workbench = "blackforge";
+            DA_SeekingTable.Category = "Crafting";
+            DA_SeekingTable.PieceCost = new List<JotunnPiece.PieceCost>() {
+                { new JotunnPiece.PieceCost() { prefab = "BlackMarble", amount = 20, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "YggdrasilWood", amount = 10, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Copper", amount = 10, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Eitr", amount = 10, refundable = true } }
+            };
+            JotunnPiece.RegisterJotunnPiece(DA_SeekingTable);
+
+            JotunnPiece.JotunnBuildPiece DA_Grinder = new JotunnPiece.JotunnBuildPiece();
+            DA_Grinder.Name = "Dverger Grinder";
+            DA_Grinder.Prefab = "DA_Grinder";
+            DA_Grinder.Sprite = "DA_Grinder";
+            DA_Grinder.Workbench = "blackforge";
+            DA_Grinder.Category = "Crafting";
+            DA_Grinder.PieceCost = new List<JotunnPiece.PieceCost>() {
+                { new JotunnPiece.PieceCost() { prefab = "Grausten", amount = 20, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "FlametalNew", amount = 10, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Blackwood", amount = 10, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "CharredCogwheel", amount = 2, refundable = true } }
+            };
+            JotunnPiece.RegisterJotunnPiece(DA_Grinder);
+
+            JotunnPiece.JotunnBuildPiece DA_Lighter = new JotunnPiece.JotunnBuildPiece();
+            DA_Lighter.Name = "Dverger Lighter";
+            DA_Lighter.Prefab = "DA_Lighter";
+            DA_Lighter.Sprite = "DA_Lighter";
+            DA_Lighter.Workbench = "forge";
+            DA_Lighter.Category = "Crafting";
+            DA_Lighter.PieceCost = new List<JotunnPiece.PieceCost>() {
+                { new JotunnPiece.PieceCost() { prefab = "Silver", amount = 10, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Wood", amount = 5, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Coal", amount = 40, refundable = true } },
+                { new JotunnPiece.PieceCost() { prefab = "Iron", amount = 5, refundable = true } }
+            };
+            JotunnPiece.RegisterJotunnPiece(DA_Lighter);
         }
     }
 }

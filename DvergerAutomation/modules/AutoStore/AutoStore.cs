@@ -357,6 +357,12 @@ namespace DvergerAutomation {
             // a full hopper stops collecting output. Crafting still counts it (it is in the linked pool),
             // it just never receives sorted goods.
             if (target.GetComponentInParent<HopperHub>() != null) { return false; }
+            // A Grinder's results chest likewise: filing materials into it would fill it up under the
+            // Grinder, which then stops until someone empties it.
+            if (target.GetComponentInParent<GrinderHub>() != null) { return false; }
+            // A Lighter's fuel tank is a working buffer too: once it holds some coal it would soak up a
+            // whole haul meant for the coal chest.
+            if (target.GetComponentInParent<LighterHub>() != null) { return false; }
             // Boats and carts lend to crafting only. They leave, and anything filed into one would leave
             // with them - a cart that happens to carry wood is not the wood chest.
             if (hub.LinkedVehicles.ContainsKey(target)) { return false; }
@@ -479,7 +485,7 @@ namespace DvergerAutomation {
         /// whole empty slots. Hand-rolled rather than <c>Inventory.FindFreeStackSpace</c>, which ignores
         /// quality and so over-reports for gear.
         /// </summary>
-        private static int FreeSpaceFor(Inventory inv, ItemDrop.ItemData item) {
+        internal static int FreeSpaceFor(Inventory inv, ItemDrop.ItemData item) {
             int max = Mathf.Max(1, item.m_shared.m_maxStackSize);
             // Clamped: GetEmptySlots is a plain width*height - count, and Container.UpdateRows grows the
             // grid to fit an over-full ZDO, so it can read negative.

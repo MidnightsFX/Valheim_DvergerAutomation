@@ -3,7 +3,8 @@ using UnityEngine;
 
 namespace DvergerAutomation {
     /// <summary>
-    /// Registry of live hoppers, plus the core-driven speed-up applied to the smelters they link.
+    /// Registry of live hoppers, plus the core-driven speed-up applied to the smelters they link, and the
+    /// request that brings a linked station over to the client running its hopper.
     ///
     /// The speed-up is a straight write to <c>Smelter.m_secPerProduct</c>. That field is a plain
     /// instance field on the MonoBehaviour, copied fresh from the prefab on every instantiation, so
@@ -19,6 +20,34 @@ namespace DvergerAutomation {
         private static readonly Dictionary<Smelter, float> Applied = new Dictionary<Smelter, float>();
 
         private static readonly List<Smelter> Scratch = new List<Smelter>();
+
+        private const string StationRequestRpc = "DA_HopperStationRequest";
+
+        // Minimum gap between two requests for the same station. A handoff takes a round trip, and a
+        // station whose owner keeps it for its own hopper is asked again at this pace, not every pass.
+        private const float StationRequestInterval = 2f;
+
+        private static readonly Dictionary<ZDOID, float> lastStationRequest = new Dictionary<ZDOID, float>();
+
+        // ZRoutedRpc is rebuilt with every session, and registering twice on the same one throws.
+        private static ZRoutedRpc registeredOn;
+
+        /// <summary>
+        /// Moves on every time a station on the Smelter component is loaded or built, anywhere. A hopper
+        /// compares it against the value at its last scan to tell whether a station may have appeared in
+        /// its range since (see <see cref="HopperHub"/>'s ScanDue).
+        /// </summary>
+        internal static int StationsLoaded { get; private set; }
+
+        internal static void NoteStationLoaded() { ++StationsLoaded; }
+
+        internal static void RegisterRpc() {
+            ZRoutedRpc rpc = ZRoutedRpc.instance;
+            if (rpc == null || rpc == registeredOn) { return; }
+            rpc.Register<ZDOID>(StationRequestRpc, RPC_StationRequest);
+            registeredOn = rpc;
+            lastStationRequest.Clear();
+        }
 
         internal static void Register(HopperHub hub) {
             if (hub != null && !Hubs.Contains(hub)) { Hubs.Add(hub); }
@@ -108,15 +137,51 @@ namespace DvergerAutomation {
         /// is someone else, collecting would mean claiming the hopper from its owner mid-service. ZDO
         /// data syncs as one revision per object, so under lag the two saves race and one rolls the other
         /// back: the bars vanish, or ore that was already fed reappears. The product drops at the smelter
-        /// instead, and the hopper's next tick hands it to the smelter's owner (HandOffToStationOwner).
+        /// instead, and the hopper's owner asks for the station on its next pass (<see cref="AskForStation"/>).
         /// </summary>
         internal static bool TryCollect(Smelter smelter, string ore, int stack) {
-            if (smelter == null || stack <= 0) { return false; }
-            if (!ValConfig.HopperEnabled.Value || !ValConfig.HopperCollectOutput.Value) { return false; }
+            Inventory inv = StoreWithRoom(smelter, ore, stack, out GameObject product);
+            if (inv == null || !inv.AddItem(product, stack)) { return false; }
+
+            // Vanilla plays this inside Spawn; skipping the original would otherwise swallow it.
+            smelter.m_produceEffects.Create(smelter.transform.position, smelter.transform.rotation);
+
+            if (ValConfig.EnableDebugMode.Value) {
+                Logger.LogInfo($"[Hopper] collected {stack}x {product.name} from {smelter.m_name}.");
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Stations that stack their output - the smelter, kiln and blast furnace among them - do not spawn
+        /// an item when it finishes. They add it to a batch kept on their ZDO and spawn the batch only once
+        /// it makes a full stack, the ore changes, or the queue or fuel runs out, so a hopper feeding one
+        /// steadily only ever got the product when its own pass flushed the station. Run as each item joins
+        /// the batch: when a hopper here can take the whole batch it is spawned on the spot, and the
+        /// <c>Smelter.Spawn</c> prefix carries it into that hopper. Otherwise it is left to grow as vanilla
+        /// would.
+        /// </summary>
+        internal static void CollectBatch(Smelter smelter) {
+            if (smelter == null || smelter.m_nview == null || !smelter.m_nview.IsValid()) { return; }
+            ZDO zdo = smelter.m_nview.GetZDO();
+            int batch = zdo.GetInt(ZDOVars.s_spawnAmount);
+            if (batch <= 0) { return; }
+            if (StoreWithRoom(smelter, zdo.GetString(ZDOVars.s_spawnOre), batch, out _) == null) { return; }
+            smelter.SpawnProcessed();
+        }
+
+        /// <summary>
+        /// The inventory of a hopper this client runs that links the station and has room right now for
+        /// <paramref name="stack"/> of what <paramref name="ore"/> becomes; null when there is none.
+        /// </summary>
+        private static Inventory StoreWithRoom(Smelter smelter, string ore, int stack, out GameObject product) {
+            product = null;
+            if (smelter == null || stack <= 0) { return null; }
+            if (!ValConfig.HopperEnabled.Value || !ValConfig.HopperCollectOutput.Value) { return null; }
 
             Smelter.ItemConversion conversion = smelter.GetItemConversion(ore);
-            if (conversion == null || conversion.m_to == null) { return false; }
-            GameObject prefab = conversion.m_to.gameObject;
+            if (conversion == null || conversion.m_to == null) { return null; }
+            product = conversion.m_to.gameObject;
 
             foreach (HopperHub hub in Hubs) {
                 if (hub == null || !hub.IsActive || !hub.IsOwner) { continue; }
@@ -128,16 +193,82 @@ namespace DvergerAutomation {
                 if (CraftFromStoragePatches.IsBusy(store)) { continue; }
                 hub.SyncStore();
                 Inventory inv = store.GetInventory();
-                if (inv == null || !inv.CanAddItem(prefab, stack)) { continue; }
-                if (!inv.AddItem(prefab, stack)) { continue; }
+                if (inv != null && inv.CanAddItem(product, stack)) { return inv; }
+            }
+            return null;
+        }
 
-                // Vanilla plays this inside Spawn; skipping the original would otherwise swallow it.
-                smelter.m_produceEffects.Create(smelter.transform.position, smelter.transform.rotation);
+        /// <summary>Whether the container is a hopper's store.</summary>
+        internal static bool IsStore(Container container) {
+            if (container == null) { return false; }
+            HopperHub hub = container.GetComponentInParent<HopperHub>();
+            return hub != null && hub.Store == container;
+        }
 
-                if (ValConfig.EnableDebugMode.Value) {
-                    Logger.LogInfo($"[Hopper] collected {stack}x {prefab.name} from {smelter.m_name}.");
+        // ---- bringing stations to the hopper ------------------------------------
+
+        /// <summary>
+        /// Asks the owner of a station this client's hopper links to hand it over, so the hopper can feed
+        /// it. Feeding only ever touches stations this client owns (see <see cref="HopperHub"/>), and a
+        /// hopper whose stations ran on several players' games used to feed only its own owner's share:
+        /// the rest sat idle, and which ones ran shifted as players came and went. Bringing the stations
+        /// to the hopper keeps every one of them fed by one client. A station nobody owns is simply
+        /// taken - there is no one to race. Rate-limited per station, so it is cheap to call every pass.
+        /// </summary>
+        internal static void AskForStation(Smelter smelter) {
+            if (smelter == null || smelter.m_nview == null || !smelter.m_nview.IsValid()) { return; }
+            ZDO zdo = smelter.m_nview.GetZDO();
+            long owner = zdo.GetOwner();
+            if (owner == 0L) {
+                smelter.m_nview.ClaimOwnership();
+                return;
+            }
+
+            float now = Time.time;
+            if (lastStationRequest.TryGetValue(zdo.m_uid, out float last) && now - last < StationRequestInterval) { return; }
+            lastStationRequest[zdo.m_uid] = now;
+            if (ZRoutedRpc.instance == null) { return; }
+            ZRoutedRpc.instance.InvokeRoutedRPC(owner, StationRequestRpc, zdo.m_uid);
+        }
+
+        /// <summary>
+        /// Another player's hopper wants a station this client owns. Handed over the way vanilla hands a
+        /// chest to the player opening it - <c>ForceSendZDO</c>, then <c>SetOwner</c>, from this side - so
+        /// the station's latest queue and fuel travel with it and this client stops running it at that
+        /// moment. Kept when a hopper this client runs feeds it as well: two hoppers covering one station
+        /// would otherwise pass it back and forth. A refusal is silent; the requester asks again later.
+        /// </summary>
+        private static void RPC_StationRequest(long sender, ZDOID id) {
+            try {
+                if (ZDOMan.instance == null || ZNetScene.instance == null) { return; }
+                if (sender == ZDOMan.GetSessionID()) { return; }
+                ZDO zdo = ZDOMan.instance.GetZDO(id);
+                if (zdo == null || !zdo.IsOwner()) { return; }
+                GameObject root = ZNetScene.instance.FindInstance(id);
+                Smelter smelter = root != null ? root.GetComponentInChildren<Smelter>() : null;
+                if (smelter == null) { return; }
+                if (FedHere(smelter)) {
+                    if (ValConfig.EnableDebugMode.Value) {
+                        Logger.LogInfo($"[Hopper] kept {StationName(smelter)}: a hopper here feeds it too.");
+                    }
+                    return;
                 }
-                return true;
+
+                ZDOMan.instance.ForceSendZDO(sender, id);
+                zdo.SetOwner(sender);
+                if (ValConfig.EnableDebugMode.Value) {
+                    Logger.LogInfo($"[Hopper] handed {StationName(smelter)} to {sender}, whose hopper feeds it.");
+                }
+            } catch (System.Exception ex) {
+                Logger.LogError($"[Hopper] handing over a station failed: {ex}");
+            }
+        }
+
+        // A dedicated server never scans (see HopperHub's tick), so it always hands its stations on.
+        private static bool FedHere(Smelter smelter) {
+            foreach (HopperHub hub in Hubs) {
+                if (hub == null || !hub.IsOwner || !hub.IsActive) { continue; }
+                if (hub.LinkedSmelters.Contains(smelter)) { return true; }
             }
             return false;
         }

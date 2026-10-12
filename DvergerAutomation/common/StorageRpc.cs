@@ -39,6 +39,11 @@ namespace DvergerAutomation {
             ChestAdd = 3,
             ChestRemove = 4,
             ChestMove = 5,
+            // The Seeking Table fetching one particular item (StorageOps).
+            TakeExact = 6,
+            // Feeding an item into a Grinder's queue, and taking the last one back out (GrinderOps).
+            GrinderFeed = 7,
+            GrinderTakeBack = 8,
         }
 
         internal enum Status : byte {

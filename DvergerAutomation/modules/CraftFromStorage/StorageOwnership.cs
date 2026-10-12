@@ -27,10 +27,13 @@ namespace DvergerAutomation {
     /// wanting the same chest do not pass it back and forth - the first keeps it until they are done.
     ///
     /// A chest its owner has open is never handed over: that would pull the panel out from under them.
-    /// Those are reached a different way, through the owner (see <see cref="StorageRpc"/>): for crafting
-    /// and building it takes the materials out itself and sends them across (see
-    /// <see cref="StorageReserve"/>), and for auto-store it is sent the items to put in. The Hopper and
-    /// Epic Loot's table still leave an open chest alone.
+    /// Nor is the Hopper's store, whose owner is feeding its stations from it and has asked for those
+    /// stations to come to it (see <see cref="HopperNetwork.AskForStation"/>): taking the store away would
+    /// leave every one of them unfed. Those are reached a different way, through the owner (see
+    /// <see cref="StorageRpc"/>): for crafting and building it takes the materials out itself and sends
+    /// them across (see <see cref="StorageReserve"/>), and for auto-store it is sent the items to put in.
+    /// The Hopper and Epic Loot's table still leave an open chest alone, and Epic Loot only draws on a
+    /// Hopper's store when this client runs that hopper.
     /// </summary>
     internal static class StorageOwnership {
         private const string RequestRpc = "DA_RequestStorage";
@@ -119,11 +122,12 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// Whether a chest someone else owns is worth asking for whole. Not when it is open or is a
-        /// vehicle in use (see <see cref="CraftFromStoragePatches.IsBusy"/>): its owner would refuse.
+        /// Whether a chest someone else owns is worth asking for whole. Not when it is open, is a
+        /// vehicle in use (see <see cref="CraftFromStoragePatches.IsBusy"/>) or is a Hopper's store: its
+        /// owner would refuse.
         /// </summary>
         internal static bool CanAskHandover(Container container) {
-            return IsLive(container) && !CraftFromStoragePatches.IsBusy(container);
+            return IsLive(container) && !CraftFromStoragePatches.IsBusy(container) && !HopperNetwork.IsStore(container);
         }
 
         /// <summary>
@@ -284,6 +288,8 @@ namespace DvergerAutomation {
         }
 
         private static void Request(Container container) {
+            // Never handed over (see the class summary), so there is nothing to ask for.
+            if (HopperNetwork.IsStore(container)) { return; }
             ZDO zdo = container.m_nview.GetZDO();
             float now = Time.time;
             if (lastRequest.TryGetValue(zdo.m_uid, out float last) && now - last < RequestInterval) { return; }
@@ -364,6 +370,7 @@ namespace DvergerAutomation {
             foreach (Container container in root.GetComponentsInChildren<Container>(includeInactive: true)) {
                 if (container.m_nview != nview) { continue; }
                 if (CraftFromStoragePatches.IsBusy(container) || IsHeld(container)) { return false; }
+                if (HopperNetwork.IsStore(container)) { return false; }
             }
 
             // A hold or cart bed shares the vehicle's ZDO, so this would hand over the vehicle itself.
@@ -410,6 +417,9 @@ namespace DvergerAutomation {
             StorageOwnership.RegisterRpc();
             StorageOps.Register();
             SharedChestOps.Register();
+            GrinderOps.Register();
+            HopperNetwork.RegisterRpc();
+            LighterNetwork.RegisterRpc();
             StorageRpc.RegisterRpc();
             StorageReserve.Reset();
             SharedChestRequests.Reset();

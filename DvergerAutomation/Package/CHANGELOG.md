@@ -1,3 +1,16 @@
+**0.12.0**
+- Adds the Dverger Seeking Table, a Mistlands machine that lists everything in the chests around it and lets you search for and take any of it.
+- Black Cores set into its pillars let it reach chests further away.
+- With Epic Loot installed, its search can find gear by enchantment.
+- Adds the Dverger Grinder, an Ashlands machine that breaks crafted items down into part of what they cost.
+- Molten Cores set into the Grinder make it work faster and return more.
+- Adds the Dverger Lighter, a Mountains machine that keeps the fires, torches, ovens and hot tubs around it fuelled from its tank.
+- The Dverger Hopper now collects bars and coal the moment they are made, instead of on its next pass.
+- In multiplayer the Hopper now keeps every station in its range running, not just the ones that happened to run on the same player's game.
+- Crafting from a Hopper's storage no longer pulls the Hopper away from its smelters.
+- Pressing a hotbar key at an Autosorter or Hopper core socket now uses that item instead of moving a core, and a core dropped just as it goes in no longer fills the socket for free.
+- Crafting panels, the build menu and the Hopper do less repeated work in large bases.
+
 **0.11.1**
 - The deposit button on the Autosorter and Hopper can now be pressed with a controller, using the same button as Place stacks.
 

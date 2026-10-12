@@ -20,7 +20,15 @@ namespace DvergerAutomation {
         /// server setting.
         /// </summary>
         internal static void Collect(Vector3 center, float radius, long playerId, Dictionary<Container, MonoBehaviour> into) {
-            if (ValConfig.CraftFromBoats.Value) {
+            Collect(center, radius, playerId, into, ValConfig.CraftFromBoats.Value, ValConfig.CraftFromCarts.Value);
+        }
+
+        /// <summary>
+        /// <see cref="Collect(Vector3, float, long, Dictionary{Container, MonoBehaviour})"/> for a piece
+        /// with its own settings for which vehicle types count.
+        /// </summary>
+        internal static void Collect(Vector3 center, float radius, long playerId, Dictionary<Container, MonoBehaviour> into, bool boats, bool carts) {
+            if (boats) {
                 foreach (IMonoUpdater instance in Ship.Instances) {
                     Ship ship = instance as Ship;
                     if (ship == null) { continue; }
@@ -32,7 +40,7 @@ namespace DvergerAutomation {
                 }
                 HoldScratch.Clear();
             }
-            if (ValConfig.CraftFromCarts.Value) {
+            if (carts) {
                 foreach (Vagon cart in Vagon.m_instances) {
                     if (cart == null) { continue; }
                     Consider(cart.m_container, cart, center, radius, playerId, into);

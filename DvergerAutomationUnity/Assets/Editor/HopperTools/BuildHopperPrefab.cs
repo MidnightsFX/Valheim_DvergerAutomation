@@ -327,7 +327,7 @@ public static class BuildHopperPrefab {
                 notes.Add("AddCore" + n + " paired with " + nearest.name + " by position (names disagree).");
             }
             // The crystals ship hidden and on Default, exactly like DA_Autosorter's Core1-4;
-            // HopperHub toggles them from the ZDO core mask.
+            // CoreSockets toggles them from the ZDO core mask.
             nearest.gameObject.layer = DefaultLayer;
             nearest.gameObject.SetActive(false);
             coreVisuals[i] = nearest.gameObject;
@@ -431,7 +431,8 @@ public static class BuildHopperPrefab {
 
         WearNTear wnt = root.AddComponent<WearNTear>();
         wnt.m_health = 1000f;
-        wnt.m_noRoofWear = true;
+        // false = no rain damage when uncovered, like the vanilla smelter and chests.
+        wnt.m_noRoofWear = false;
         wnt.m_noSupportWear = true;
         wnt.m_supports = true;
         wnt.m_burnable = true;
@@ -444,9 +445,22 @@ public static class BuildHopperPrefab {
         wnt.m_hitEffect = MockEffects(HitEffectMocks, notes);
         wnt.m_destroyedEffect = MockEffects(DestroyedEffectMocks, notes);
 
+        // In AddCore order: 1-3 low-to-high on the +X flank, 4-6 low-to-high on the -X flank. The order
+        // is the bit order of the mask saved in worlds, so it must not change. No ActiveVisuals: the
+        // smoke follows HopperHub.IsActive, which is true on zero cores with "Require Cores" off.
+        CoreSockets sockets = root.AddComponent<CoreSockets>();
+        sockets.Switches = switches;
+        sockets.SlotVisuals = coreVisuals;
+        sockets.SlotEffects = new GameObject[0];
+        sockets.ActiveVisuals = null;
+        sockets.ItemPrefab = "SurtlingCore";
+        sockets.MaskKey = "DA_hopper_cores";
+        sockets.HoverName = "$DA_hopper_name";
+        sockets.AddMessage = "$DA_Add_Core";
+        sockets.RemoveMessage = "$DA_Remove_Core";
+        sockets.NeedMessage = "$DA_Need_Core";
+
         HopperHub hub = root.AddComponent<HopperHub>();
-        hub.CoreSwitches = switches;
-        hub.CoreVisuals = coreVisuals;
         hub.EnabledVisuals = enabledVisuals;
         hub.SpinningGears = new Transform[0];
 
@@ -476,7 +490,7 @@ public static class BuildHopperPrefab {
     /// the right name - Jotunn strips the "JVLmock_" prefix and looks the remainder up in the game's
     /// prefab cache. Created on demand so a fresh clone of the repo does not need the asset committed.
     /// </summary>
-    private static GameObject EnsureMock(string mockName, List<string> notes) {
+    internal static GameObject EnsureMock(string mockName, List<string> notes) {
         string path = MockDir + "/" + mockName + ".prefab";
         GameObject existing = AssetDatabase.LoadAssetAtPath<GameObject>(path);
         if (existing != null) { return existing; }
@@ -505,7 +519,7 @@ public static class BuildHopperPrefab {
     /// An EffectList of the named mocks with vanilla's default per-entry settings (enabled, no variant,
     /// not attached). A mock that could not be created is left out rather than added as a null entry.
     /// </summary>
-    private static EffectList MockEffects(string[] mockNames, List<string> notes) {
+    internal static EffectList MockEffects(string[] mockNames, List<string> notes) {
         List<EffectList.EffectData> effects = new List<EffectList.EffectData>();
         foreach (string mockName in mockNames) {
             GameObject mock = EnsureMock(mockName, notes);
@@ -551,12 +565,12 @@ public static class BuildHopperPrefab {
         }
     }
 
-    private static T GetOrAdd<T>(GameObject go) where T : Component {
+    internal static T GetOrAdd<T>(GameObject go) where T : Component {
         T existing = go.GetComponent<T>();
         return existing != null ? existing : go.AddComponent<T>();
     }
 
-    private static void AddMeshCollider(GameObject go, List<string> notes) {
+    internal static void AddMeshCollider(GameObject go, List<string> notes) {
         MeshFilter filter = go.GetComponent<MeshFilter>();
         if (filter == null || filter.sharedMesh == null) {
             notes.Add("No mesh on '" + go.name + "'; skipped its collider.");
@@ -568,7 +582,7 @@ public static class BuildHopperPrefab {
         col.convex = false;
     }
 
-    private static Transform FindDeep(Transform parent, string name) {
+    internal static Transform FindDeep(Transform parent, string name) {
         if (parent.name == name) { return parent; }
         for (int i = 0; i < parent.childCount; ++i) {
             Transform found = FindDeep(parent.GetChild(i), name);
@@ -577,7 +591,7 @@ public static class BuildHopperPrefab {
         return null;
     }
 
-    private static void SetLayerRecursive(GameObject go, int layer) {
+    internal static void SetLayerRecursive(GameObject go, int layer) {
         go.layer = layer;
         for (int i = 0; i < go.transform.childCount; ++i) {
             SetLayerRecursive(go.transform.GetChild(i).gameObject, layer);

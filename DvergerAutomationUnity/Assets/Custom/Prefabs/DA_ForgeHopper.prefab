@@ -936,6 +936,7 @@ GameObject:
   - component: {fileID: 1694412729876778914}
   - component: {fileID: 5363523780146042214}
   - component: {fileID: 2592265116184098595}
+  - component: {fileID: 2318554054411978517}
   - component: {fileID: 5622048914343300045}
   m_Layer: 0
   m_Name: DA_ForgeHopper
@@ -1088,7 +1089,7 @@ MonoBehaviour:
   m_snow: {fileID: 0}
   m_snowWorn: {fileID: 0}
   m_snowBroken: {fileID: 0}
-  m_noRoofWear: 1
+  m_noRoofWear: 0
   m_roofCheckOffset: 0
   m_noSupportWear: 1
   m_snowDamageImmune: 0
@@ -1181,6 +1182,40 @@ MonoBehaviour:
     m_effectPrefabs: []
   m_autoCreateFragments: 1
   m_fragmentRoots: []
+--- !u!114 &2318554054411978517
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4719109705567416848}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: -1031534687, guid: 44323dcb83ab7ff47b34d80972104c16, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  Switches:
+  - {fileID: 2142704814101162906}
+  - {fileID: 8906071087723342880}
+  - {fileID: 8184637986159075017}
+  - {fileID: 7664592211858444063}
+  - {fileID: 6239169007339209446}
+  - {fileID: 4995881395887048004}
+  SlotVisuals:
+  - {fileID: 311827770453371557}
+  - {fileID: 6470488765585201373}
+  - {fileID: 1330246329014313883}
+  - {fileID: 5366004591911043466}
+  - {fileID: 4250055042304827965}
+  - {fileID: 2255531733613007037}
+  SlotEffects: []
+  ActiveVisuals: {fileID: 0}
+  ItemPrefab: SurtlingCore
+  MaskKey: DA_hopper_cores
+  HoverName: $DA_hopper_name
+  AddMessage: $DA_Add_Core
+  RemoveMessage: $DA_Remove_Core
+  NeedMessage: $DA_Need_Core
 --- !u!114 &5622048914343300045
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1193,20 +1228,6 @@ MonoBehaviour:
   m_Script: {fileID: 1109495196, guid: 44323dcb83ab7ff47b34d80972104c16, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  CoreSwitches:
-  - {fileID: 2142704814101162906}
-  - {fileID: 8906071087723342880}
-  - {fileID: 8184637986159075017}
-  - {fileID: 7664592211858444063}
-  - {fileID: 6239169007339209446}
-  - {fileID: 4995881395887048004}
-  CoreVisuals:
-  - {fileID: 311827770453371557}
-  - {fileID: 6470488765585201373}
-  - {fileID: 1330246329014313883}
-  - {fileID: 5366004591911043466}
-  - {fileID: 4250055042304827965}
-  - {fileID: 2255531733613007037}
   EnabledVisuals: {fileID: 9146869881585495143}
   SpinningGears: []
 --- !u!1 &5366004591911043466

@@ -12,6 +12,7 @@ namespace DvergerAutomation {
         internal static void Register() {
             StorageRpc.Register(StorageRpc.Op.Take, Take);
             StorageRpc.Register(StorageRpc.Op.Give, Give);
+            StorageRpc.Register(StorageRpc.Op.TakeExact, TakeExact);
         }
 
         internal static void WriteTake(ZPackage args, string name, int quality, int amount) {
@@ -64,6 +65,80 @@ namespace DvergerAutomation {
 
             if (taken.Count > 0) { AfterChange(container); }
             return remaining <= 0 ? StorageRpc.Status.Ok : StorageRpc.Status.Partial;
+        }
+
+        /// <summary>
+        /// Asks for <paramref name="amount"/> units of exactly <paramref name="prototype"/>: for a stackable
+        /// item any stack it would merge with, for anything else only an item nobody could tell from it
+        /// (see <see cref="ItemIdentity"/>). <paramref name="hint"/> is where the asker last saw it.
+        /// </summary>
+        internal static void WriteTakeExact(ZPackage args, ItemDrop.ItemData prototype, Vector2i hint, int amount) {
+            ItemDrop.ItemData one = prototype.Clone();
+            one.m_stack = 1;
+            ItemCodec.Write(args, new[] { one });
+            args.Write(hint.x);
+            args.Write(hint.y);
+            args.Write(amount);
+        }
+
+        /// <summary>
+        /// The Seeking Table's fetch: removes up to the asked amount of one particular item and replies
+        /// with what was removed. Unlike <see cref="Take"/> this serves enchanted gear too - the asker
+        /// named the very item it wants, so there is no mistaking it for plain material.
+        ///
+        /// The item is looked for where the asker saw it first, so of several identical swords the one
+        /// clicked on is the one that comes, then anywhere else in the chest, since the owner may have
+        /// moved it. Nothing matching at all is <see cref="StorageRpc.Status.Changed"/>: someone got there
+        /// first.
+        /// </summary>
+        private static StorageRpc.Status TakeExact(Container container, long sender, ZPackage args, ZPackage reply) {
+            List<ItemDrop.ItemData> prototypes = ItemCodec.Read(args, out bool intact);
+            Vector2i hint = new Vector2i(args.ReadInt(), args.ReadInt());
+            int amount = args.ReadInt();
+            // Not an item this game has a prefab for, so nothing here can match it.
+            if (!intact || prototypes.Count != 1 || amount <= 0) { return StorageRpc.Status.Error; }
+            ItemDrop.ItemData prototype = prototypes[0];
+
+            StorageOwnership.Sync(container);
+            Inventory inv = container.GetInventory();
+            List<ItemDrop.ItemData> taken = new List<ItemDrop.ItemData>();
+            int remaining = amount;
+            try {
+                if (inv != null) {
+                    ItemDrop.ItemData at = inv.GetItemAt(hint.x, hint.y);
+                    if (at != null) { remaining -= TakeMatching(inv, at, prototype, remaining, taken); }
+
+                    // Backwards, as in Take: emptied stacks drop out of the live list as it goes.
+                    List<ItemDrop.ItemData> items = inv.GetAllItems();
+                    for (int i = items.Count - 1; i >= 0 && remaining > 0 && taken.Count < ItemCodec.MaxItems; --i) {
+                        remaining -= TakeMatching(inv, items[i], prototype, remaining, taken);
+                    }
+                }
+                ItemCodec.Write(reply, taken);
+            } catch (Exception) {
+                // As in Take: the reply is the only copy, and it is not going out.
+                PutBack(inv, taken);
+                throw;
+            }
+
+            if (taken.Count == 0) { return StorageRpc.Status.Changed; }
+            AfterChange(container);
+            return remaining <= 0 ? StorageRpc.Status.Ok : StorageRpc.Status.Partial;
+        }
+
+        private static int TakeMatching(Inventory inv, ItemDrop.ItemData item, ItemDrop.ItemData prototype, int remaining, List<ItemDrop.ItemData> taken) {
+            if (remaining <= 0 || !ItemIdentity.Interchangeable(prototype, item)) { return 0; }
+            // Cannot be rebuilt on the other side, so it would leave here and arrive nowhere.
+            if (item.m_dropPrefab == null) { return 0; }
+
+            int take = Mathf.Min(item.m_stack, remaining);
+            ItemDrop.ItemData slice = item.Clone();
+            slice.m_stack = take;
+            // Only what actually left the chest is sent. A mod that refuses the removal would otherwise
+            // have the asker handed a copy of something still here.
+            if (!inv.RemoveItem(item, take)) { return 0; }
+            taken.Add(slice);
+            return take;
         }
 
         private static void PutBack(Inventory inv, List<ItemDrop.ItemData> taken) {

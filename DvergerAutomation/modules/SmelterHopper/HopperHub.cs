@@ -5,12 +5,13 @@ using UnityEngine;
 
 namespace DvergerAutomation {
     /// <summary>
-    /// MonoBehaviour for the DA_ForgeHopper piece. Attached to the prefab in Unity (not in code).
+    /// MonoBehaviour for the DA_ForgeHopper piece. Attached to the prefab in Unity (not in code), next to
+    /// the <see cref="CoreSockets"/> holding its six Surtling Cores.
     ///
     /// The hopper keeps a single shared inventory, reached through the hatch on its front face. On a
     /// timer it links every <see cref="Smelter"/> in range and services them from that one inventory:
-    /// fuel first, then ore. Finished product is pulled back into the same inventory by the
-    /// <c>Smelter.Spawn</c> prefix in <see cref="HopperPatches"/>, so the chain closes on itself -
+    /// ore first, then the fuel that ore needs. Finished product is pulled back into the same inventory
+    /// by the <c>Smelter.Spawn</c> prefix in <see cref="HopperPatches"/>, so the chain closes on itself -
     /// wood becomes coal in a kiln, and that coal is then spent as smelter fuel.
     ///
     /// Note that <see cref="Smelter"/> is not just the smelter: the windmill, spinning wheel, eitr
@@ -20,21 +21,17 @@ namespace DvergerAutomation {
     /// sees and services the same set.
     ///
     /// Every item move happens on one client: the one that owns the hopper, and only for stations it
-    /// also owns. See <see cref="ServiceSmelters"/> for why.
+    /// also owns. It asks for the rest, so the stations follow the hopper. See
+    /// <see cref="ServiceSmelters"/> for why.
     /// </summary>
     public class HopperHub : MonoBehaviour {
         // ---- Unity-wired references ----------------------------------------
 
         /// <summary>
-        /// The six core sockets, in AddCore order: 1-3 low-to-high on the +X flank, 4-6 low-to-high on
-        /// the -X flank. Each is paired with its crystal by position at prefab build time, not by name.
+        /// Shown while the hopper works. Follows <see cref="IsActive"/> rather than the cores, which is why
+        /// it lives here and not on the <see cref="CoreSockets"/>: with "Require Cores" turned off the
+        /// hopper works on zero cores, and a working hopper that never smokes reads as broken.
         /// </summary>
-        public Switch[] CoreSwitches = new Switch[SlotCount];
-
-        /// <summary>Per-slot crystal, shown only while that slot holds a core. Same order as the switches.</summary>
-        public GameObject[] CoreVisuals = new GameObject[SlotCount];
-
-        /// <summary>Shown while at least one core is inserted.</summary>
         public GameObject EnabledVisuals;
 
         /// <summary>
@@ -47,11 +44,7 @@ namespace DvergerAutomation {
 
         // ---- state ----------------------------------------------------------
 
-        internal const int SlotCount = 6;
-
-        // ZDO key holding the inserted-core bitmask (bit n set => slot n filled). Deliberately not the
-        // autosorter's key: the two pieces have different slot counts and must not read each other's mask.
-        private const string CoreMaskKey = "DA_hopper_cores";
+        private const string NameToken = "$DA_hopper_name";
 
         // ZDO key holding the station types this hopper services, as comma-separated prefab names. Absent
         // until someone first changes the choice; a hopper without it services DefaultTargets. An empty
@@ -70,8 +63,16 @@ namespace DvergerAutomation {
         private string targetsParsedFrom;
 
         private ZNetView nview;
+        private CoreSockets sockets;
         private Coroutine loop;
-        private static int pieceMask;
+
+        // Linking overlaps every collider in range and asks a ward about each station, so a tick only
+        // relinks when something the last scan depended on has moved (see ScanDue). Past this many seconds
+        // it relinks anyway: a ward's permissions can change without anything else doing so.
+        private const float RescanSeconds = 30f;
+        private int scannedStations = -1;
+        private float scannedAt;
+        private string scannedFor;
 
         // Rotating start index, so a run of smelters is served fairly instead of the first one soaking
         // up the whole per-tick budget.
@@ -96,21 +97,23 @@ namespace DvergerAutomation {
             nview = GetComponent<ZNetView>();
             // The only Container under the piece is the store; the root itself has none.
             Store = GetComponentInChildren<Container>(includeInactive: true);
-
-            if (nview != null && nview.GetZDO() != null) {
-                nview.Register("DA_HopperCores", new Action<long>(RPC_RefreshCores));
-                nview.Register<int, bool>("DA_HopperCoreRequest", RPC_CoreRequest);
-                nview.Register<int, bool>("DA_HopperCoreResult", RPC_CoreResult);
-                nview.Register<string, bool>("DA_HopperTargetRequest", RPC_TargetRequest);
-                WearNTear wnt = GetComponent<WearNTear>();
-                if (wnt != null) { wnt.m_onDestroyed += OnDestroyedDropCores; }
+            sockets = GetComponent<CoreSockets>();
+            if (sockets != null) {
+                sockets.SetHoverName(NameToken);
+                sockets.StatusLine = CoreStatus;
+                sockets.Changed += OnCoresChanged;
             }
 
-            // Switch callbacks are C# delegates and cannot be assigned in Unity, so wire them here.
-            for (int slot = 0; slot < SlotCount; ++slot) { WireSwitch(slot); }
+            if (nview != null && nview.GetZDO() != null) {
+                nview.Register<string, bool>("DA_HopperTargetRequest", RPC_TargetRequest);
+            }
 
             // Refresh visuals shortly after load (and periodically) so a late ZDO sync still lights up.
             InvokeRepeating(nameof(UpdateVisuals), 1f, 4f);
+        }
+
+        private void OnDestroy() {
+            if (sockets != null) { sockets.Changed -= OnCoresChanged; }
         }
 
         private void OnEnable() {
@@ -139,7 +142,7 @@ namespace DvergerAutomation {
                     // Linking and the core speed-up run on every client, not just the ZDO owner:
                     // Smelter.UpdateSmelter runs on the *smelter's* owner, and that may be someone else,
                     // so each client has to apply the boost to its own instances.
-                    SafeScan();
+                    if (ScanDue()) { SafeScan(); }
 
                     // Moving items is owner-only. Two clients both feeding the same smelter would
                     // consume the stack twice.
@@ -166,7 +169,28 @@ namespace DvergerAutomation {
             }
         }
 
+        /// <summary>
+        /// Whether the links are worth rebuilding: a station has loaded or been built anywhere since the
+        /// last scan, a linked one is gone, the hopper's cores, targets or settings changed, or
+        /// <see cref="RescanSeconds"/> have passed.
+        /// </summary>
+        private bool ScanDue() {
+            if (HopperNetwork.StationsLoaded != scannedStations) { return true; }
+            if (Time.time - scannedAt >= RescanSeconds) { return true; }
+            if (ScanInputs() != scannedFor) { return true; }
+            foreach (Smelter smelter in LinkedSmelters) {
+                if (smelter == null) { return true; }
+            }
+            return false;
+        }
+
+        // Everything a scan reads besides the stations themselves.
+        private string ScanInputs() => $"{IsActive}|{EffectiveRadius}|{SpeedMultiplier}|{TargetList}";
+
         private void Scan() {
+            scannedStations = HopperNetwork.StationsLoaded;
+            scannedAt = Time.time;
+            scannedFor = ScanInputs();
             LinkedSmelters.Clear();
 
             bool dormant = !ValConfig.HopperEnabled.Value
@@ -194,11 +218,11 @@ namespace DvergerAutomation {
         /// which is why it ignores whether the hopper is dormant.
         /// </summary>
         internal List<Smelter> StationsInRange() {
-            if (pieceMask == 0) { pieceMask = LayerMask.GetMask("piece", "piece_nonsolid"); }
-
             List<Smelter> found = new List<Smelter>();
             HashSet<Smelter> seen = new HashSet<Smelter>();
-            foreach (Collider hit in Physics.OverlapSphere(transform.position, EffectiveRadius, pieceMask)) {
+            Collider[] hits = StorageScan.OverlapPieces(transform.position, EffectiveRadius, out int count);
+            for (int i = 0; i < count; ++i) {
+                Collider hit = hits[i];
                 if (hit == null) { continue; }
                 Smelter smelter = hit.GetComponentInParent<Smelter>();
                 if (smelter == null || !seen.Add(smelter)) { continue; }
@@ -207,6 +231,7 @@ namespace DvergerAutomation {
                 if (!PrivateArea.CheckAccess(smelter.transform.position, 0f, flash: false)) { continue; }
                 found.Add(smelter);
             }
+            StorageScan.ReleaseOverlap(count);
             return found;
         }
 
@@ -265,36 +290,40 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// Collect finished product, top up fuel, then queue ore - in that order, and that order matters.
-        /// Collecting first means coal a charcoal kiln finished this tick is already in the inventory and
-        /// can be spent as smelter fuel in the same tick, which is what closes the wood -> coal -> bars
-        /// chain without any special-casing. Fuel before ore means that if some modded station ever makes
-        /// one item both a valid fuel and a valid conversion input, keeping fires lit wins.
+        /// Collect finished product, queue ore, then fuel what is queued - in that order, and that order
+        /// matters. Collecting first means coal a charcoal kiln finished this tick is already in the
+        /// inventory and can be spent as smelter fuel in the same tick, which is what closes the wood ->
+        /// coal -> bars chain without any special-casing. Ore before fuel because fuel is sized to the
+        /// queue (see <see cref="FeedFuel"/>), so ore queued this tick is fuelled this tick too.
         ///
         /// Only stations this client owns are touched. Vanilla's RPC_AddOre / RPC_AddFuel are addressed
         /// to the sender's copy of the station's owner and silently do nothing on anyone else, so an item
         /// sent across the network while the station changes hands is simply gone - and the hopper sends
         /// them by the stack. Sent to a station this client owns, ZRoutedRpc runs the RPC right here, in
         /// the same frame the item left the store: no network hop, nothing to lose, and the room read
-        /// from the ZDO is the real one rather than a lagging replica. Stations owned by someone else are
-        /// skipped, and when that is all of them the hopper is handed to their owner instead.
+        /// from the ZDO is the real one rather than a lagging replica. A station owned by someone else is
+        /// asked for instead (<see cref="HopperNetwork.AskForStation"/>) and fed once it has arrived.
+        ///
+        /// The stations come to the hopper rather than the other way round: handing the hopper to whoever
+        /// owned most of its stations still left the others unfed whenever they ran on different games.
         /// </summary>
         private void ServiceSmelters() {
             if (Store == null || LinkedSmelters.Count == 0) { return; }
 
-            // Someone has the hatch open. Writing to the inventory under them would blank their panel
-            // (see CraftFromStoragePatches.IsBusy), so the hopper idles until they close it.
-            if (CraftFromStoragePatches.IsBusy(Store)) { return; }
-
             ownedSmelters.Clear();
             foreach (Smelter smelter in LinkedSmelters) {
                 if (smelter == null || smelter.m_nview == null || !smelter.m_nview.IsValid()) { continue; }
-                if (smelter.m_nview.IsOwner()) { ownedSmelters.Add(smelter); }
+                if (smelter.m_nview.IsOwner()) {
+                    ownedSmelters.Add(smelter);
+                } else {
+                    HopperNetwork.AskForStation(smelter);
+                }
             }
-            if (ownedSmelters.Count == 0) {
-                HandOffToStationOwner();
-                return;
-            }
+            if (ownedSmelters.Count == 0) { return; }
+
+            // Someone has the hatch open. Writing to the inventory under them would blank their panel
+            // (see CraftFromStoragePatches.IsBusy), so the hopper idles until they close it.
+            if (CraftFromStoragePatches.IsBusy(Store)) { return; }
 
             SyncStore();
             Inventory inv = Store.GetInventory();
@@ -303,8 +332,8 @@ namespace DvergerAutomation {
             FlushFinished();
 
             int budget = Mathf.Max(1, ValConfig.HopperItemsPerTick.Value);
-            int moved = FeedFuel(inv, budget);
-            moved += FeedOre(inv, budget - moved);
+            int moved = FeedOre(inv, budget);
+            moved += FeedFuel(inv, budget - moved);
 
             // Advance the round robin so the next tick starts at a different smelter.
             rotateStart = (rotateStart + 1) % ownedSmelters.Count;
@@ -326,60 +355,12 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// This client owns the hopper but none of its stations, so it cannot service any of them. Hands
-        /// the hopper to the player who owns the most of them. Typical cause: a player opened the hatch,
-        /// which moves ownership to them, and they do not own the stations.
-        ///
-        /// Uses the owner's ForceSendZDO + SetOwner, the same call vanilla's Container.RPC_RequestOpen
-        /// makes. Nothing is claimed from the other side, so the store never has two writers.
-        ///
-        /// Not while the local player is crafting out of the store: craft-from-storage asked for the
-        /// hopper to get at it (see StorageOwnership), and it goes back once they are done.
-        /// </summary>
-        private void HandOffToStationOwner() {
-            if (StorageOwnership.IsHeld(Store)) { return; }
-            long self = ZDOMan.GetSessionID();
-            Dictionary<long, int> owned = new Dictionary<long, int>();
-            foreach (Smelter smelter in LinkedSmelters) {
-                if (smelter == null || smelter.m_nview == null || !smelter.m_nview.IsValid()) { continue; }
-                long owner = smelter.m_nview.GetZDO().GetOwner();
-                if (owner == 0L || owner == self) { continue; }
-                owned.TryGetValue(owner, out int n);
-                owned[owner] = n + 1;
-            }
-
-            long best = 0L;
-            int bestCount = 0;
-            foreach (KeyValuePair<long, int> entry in owned) {
-                if (entry.Value > bestCount && IsConnectedPlayer(entry.Key)) {
-                    best = entry.Key;
-                    bestCount = entry.Value;
-                }
-            }
-            if (best == 0L) { return; }
-
-            ZDOMan.instance.ForceSendZDO(best, nview.GetZDO().m_uid);
-            nview.GetZDO().SetOwner(best);
-            if (ValConfig.EnableDebugMode.Value) {
-                Logger.LogInfo($"[Hopper] handed to {best}, who owns {bestCount} of its {LinkedSmelters.Count} stations.");
-            }
-        }
-
-        // Only hand the hopper to a player who is actually in the session. Not to the dedicated server,
-        // which never runs a service pass, and not to a peer that has already left.
-        private static bool IsConnectedPlayer(long uid) {
-            if (ZNet.instance == null) { return false; }
-            foreach (ZNet.PlayerInfo info in ZNet.instance.GetPlayerList()) {
-                if (info.m_characterID.UserID == uid) { return true; }
-            }
-            return false;
-        }
-
-        /// <summary>
         /// Vanilla only empties a smelter when its queue runs dry or its fuel does, so a continuously fed
-        /// smelter would sit on a finished stack forever. The RPC runs SpawnProcessed here and now (this
-        /// client owns every station in the list), and the Smelter.Spawn prefix then routes the product
-        /// into this inventory.
+        /// smelter would sit on a finished stack forever. Each item is normally collected as it joins the
+        /// batch (see <see cref="HopperNetwork.CollectBatch"/>); this catches a batch that could not be
+        /// taken then - the hatch was open, or the store was full. The RPC runs SpawnProcessed here and
+        /// now (this client owns every station in the list), and the Smelter.Spawn prefix then routes the
+        /// product into this inventory.
         /// </summary>
         private void FlushFinished() {
             if (!ValConfig.HopperCollectOutput.Value) { return; }
@@ -390,27 +371,53 @@ namespace DvergerAutomation {
             }
         }
 
+        /// <summary>
+        /// Gives each station the fuel its queued ore will burn, not a full tank. Topping every linked
+        /// station up to its cap parked 20 coal in each idle smelter and blast furnace, where it sat out
+        /// of the hopper and out of reach of the station that actually had ore to melt. Vanilla burns
+        /// <c>m_fuelPerProduct</c> per item at any speed, so the queue times that is the whole bill. If
+        /// the rounding of the boosted burn leaves a station a step short on its last item, it pauses
+        /// until the next pass tops it up.
+        /// </summary>
         private int FeedFuel(Inventory inv, int budget) {
+            if (budget <= 0) { return 0; }
             int moved = 0;
             int count = ownedSmelters.Count;
             for (int i = 0; i < count && moved < budget; ++i) {
                 Smelter smelter = ownedSmelters[(rotateStart + i) % count];
                 if (smelter.m_maxFuel <= 0 || smelter.m_fuelItem == null) { continue; }
 
-                // Room is measured once, before anything is added, and each add is counted against it.
-                int room = Mathf.FloorToInt(smelter.m_maxFuel - smelter.GetFuel());
-                if (room <= 0) { continue; }
+                // Measured once, before anything is added, and each add is counted against it.
+                float fuel = smelter.GetFuel();
+                int room = Mathf.FloorToInt(smelter.m_maxFuel - fuel);
+                int add = Mathf.Min(room, Mathf.CeilToInt(FuelWanted(smelter) - fuel));
+                if (add <= 0) { continue; }
 
                 string fuelName = smelter.m_fuelItem.m_itemData.m_shared.m_name;
                 int have = inv.CountItems(fuelName, -1, matchWorldLevel: false);
-                int add = Mathf.Min(room, have, budget - moved);
+                add = Mathf.Min(add, have, budget - moved);
                 for (int k = 0; k < add; ++k) {
-                    inv.RemoveItem(fuelName, 1);
+                    // Not world-level based, to match the count above: otherwise fuel from before a
+                    // world level change is counted but never removed, and the station is fed for free.
+                    inv.RemoveItem(fuelName, 1, -1, worldLevelBased: false);
                     smelter.m_nview.InvokeRPC("RPC_AddFuel");
                 }
                 moved += add;
             }
             return moved;
+        }
+
+        /// <summary>
+        /// The fuel a station should hold: enough for everything in its queue, and none when the queue is
+        /// empty. A station without an ore queue (m_maxOre 0, only ever a modded one) burns fuel with no
+        /// input at all, so it is still filled to the cap.
+        /// </summary>
+        private static float FuelWanted(Smelter smelter) {
+            if (smelter.m_maxOre <= 0) { return smelter.m_maxFuel; }
+            int queued = smelter.GetQueueSize();
+            if (queued <= 0) { return 0f; }
+            // A station that burns nothing per item still will not run on an empty tank.
+            return Mathf.Max(1, queued * smelter.m_fuelPerProduct);
         }
 
         private int FeedOre(Inventory inv, int budget) {
@@ -421,7 +428,7 @@ namespace DvergerAutomation {
                 Smelter smelter = ownedSmelters[(rotateStart + i) % count];
                 if (smelter.m_maxOre <= 0) { continue; }
 
-                // Same as the fuel pass: measure the queue once, then fill it.
+                // Measured once, before anything is added, and each add is counted against it.
                 int room = smelter.m_maxOre - smelter.GetQueueSize();
                 if (room <= 0) { continue; }
 
@@ -453,22 +460,10 @@ namespace DvergerAutomation {
 
         // ---- Surtling Core slots --------------------------------------------
 
-        private int GetCoreMask() {
-            if (nview == null || !nview.IsValid()) { return 0; }
-            return nview.GetZDO().GetInt(CoreMaskKey, 0);
-        }
+        /// <summary>Number of inserted cores (0-6), held by the piece's <see cref="CoreSockets"/>.</summary>
+        internal int CoreCount => sockets != null ? sockets.Count : 0;
 
-        /// <summary>Number of inserted cores (0-6).</summary>
-        internal int CoreCount {
-            get {
-                int mask = GetCoreMask();
-                int count = 0;
-                for (int slot = 0; slot < SlotCount; ++slot) {
-                    if ((mask & (1 << slot)) != 0) { ++count; }
-                }
-                return count;
-            }
-        }
+        private int SlotCount => sockets != null ? sockets.SlotCount : 0;
 
         /// <summary>The hopper works once at least one core is in, or immediately if cores are optional.</summary>
         internal bool IsActive {
@@ -489,120 +484,24 @@ namespace DvergerAutomation {
         /// </summary>
         internal float SpeedMultiplier => 1f + CoreCount * ValConfig.HopperSpeedPerCore.Value;
 
-        /// <summary>
-        /// Owner side of a core socket being used (the exchange is described on <see cref="SurtlingCore"/>).
-        /// A request that finds the slot already in the asked-for state - two players at once - changes
-        /// nothing and is not answered.
-        /// </summary>
-        private void RPC_CoreRequest(long sender, int slot, bool insert) {
-            if (nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
-            if (slot < 0 || slot >= SlotCount) { return; }
-            int mask = GetCoreMask();
-            int bit = 1 << slot;
-            if (((mask & bit) != 0) == insert) { return; }
-
-            nview.GetZDO().Set(CoreMaskKey, insert ? mask | bit : mask & ~bit);
-            nview.InvokeRPC(sender, "DA_HopperCoreResult", slot, insert);
-            // Everybody includes this client: refreshes visuals and applies the new range / speed now.
-            nview.InvokeRPC(ZNetView.Everybody, "DA_HopperCores");
-        }
-
-        private void RPC_CoreResult(long sender, int slot, bool inserted) {
-            SurtlingCore.Settle(inserted);
-        }
-
-        private void RPC_RefreshCores(long sender) {
+        // Runs on every client: range and speed changed for everyone, not just the player who turned the core.
+        private void OnCoresChanged() {
             UpdateVisuals();
-            // Range and speed changed for everyone, not just the player who turned the core.
             if (Player.m_localPlayer != null) { SafeScan(); }
         }
 
-        private void WireSwitch(int slot) {
-            Switch sw = (CoreSwitches != null && slot < CoreSwitches.Length) ? CoreSwitches[slot] : null;
-            if (sw == null) { return; }
-            sw.m_onUse = OnCoreSwitchUsed;
-            sw.m_onHover = () => GetSwitchHover(slot);
-            sw.m_name = "$DA_hopper_name";
-        }
-
-        private int SlotForSwitch(Switch caller) {
-            if (CoreSwitches == null) { return -1; }
-            for (int slot = 0; slot < CoreSwitches.Length; ++slot) {
-                if (CoreSwitches[slot] == caller) { return slot; }
-            }
-            return -1;
-        }
-
-        private bool OnCoreSwitchUsed(Switch caller, Humanoid user, ItemDrop.ItemData item) {
-            int slot = SlotForSwitch(caller);
-            if (slot < 0) { return false; }
-            if (!(user is Player player)) { return false; }
-            if (!PrivateArea.CheckAccess(transform.position)) { return false; }
-            if (nview == null || !nview.IsValid()) { return false; }
-
-            GameObject corePrefab = SurtlingCore.Prefab;
-            if (corePrefab == null) { return false; }
-            string coreName = SurtlingCore.SharedName(corePrefab);
-
-            bool filled = (GetCoreMask() & (1 << slot)) != 0;
-            if (filled) {
-                if (!player.GetInventory().CanAddItem(corePrefab, 1)) {
-                    user.Message(MessageHud.MessageType.Center, "$inventory_full");
-                    return false;
-                }
-            } else if (player.GetInventory().CountItems(coreName) <= 0) {
-                user.Message(MessageHud.MessageType.Center, "$DA_Need_Core");
-                return false;
-            }
-
-            // Asked of the owner rather than written here (see SurtlingCore). When this client is the
-            // owner, both RPCs run synchronously.
-            nview.InvokeRPC("DA_HopperCoreRequest", slot, !filled);
-            return true;
-        }
-
-        private string GetSwitchHover(int slot) {
-            bool filled = (GetCoreMask() & (1 << slot)) != 0;
-            string action = filled ? "$DA_Remove_Core" : "$DA_Add_Core";
-            int cores = CoreCount;
-            string status = Localization.instance.Localize(
-                "$DA_hopper_cores_status", cores.ToString(), SlotCount.ToString(),
+        private string CoreStatus() {
+            return Localization.instance.Localize(
+                "$DA_hopper_cores_status", CoreCount.ToString(), SlotCount.ToString(),
                 Mathf.RoundToInt(EffectiveRadius).ToString(),
                 Mathf.RoundToInt((SpeedMultiplier - 1f) * 100f).ToString());
-            return Localization.instance.Localize(
-                status + "\n[<color=yellow><b>$KEY_Use</b></color>] " + action);
         }
 
         private void UpdateVisuals() {
             if (nview == null || !nview.IsValid()) { return; }
             // Rides this timer because it has to be repeated, not because it is a visual.
             MultiUserChestIntegration.KeepExclusive(nview);
-            int mask = GetCoreMask();
-            if (CoreVisuals != null) {
-                for (int slot = 0; slot < CoreVisuals.Length && slot < SlotCount; ++slot) {
-                    SetActiveSafe(CoreVisuals[slot], (mask & (1 << slot)) != 0);
-                }
-            }
-            // Follows IsActive, not the raw mask: with "Require Cores" turned off the hopper works on
-            // zero cores, and a working hopper that never smokes reads as broken.
-            SetActiveSafe(EnabledVisuals, IsActive);
-        }
-
-        private static void SetActiveSafe(GameObject go, bool active) {
-            if (go != null && go.activeSelf != active) { go.SetActive(active); }
-        }
-
-        // On destroy/deconstruct, drop the inserted cores so they are not lost.
-        private void OnDestroyedDropCores() {
-            if (nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
-            int count = CoreCount;
-            if (count <= 0) { return; }
-            GameObject corePrefab = SurtlingCore.Prefab;
-            if (corePrefab == null) { return; }
-            for (int i = 0; i < count; ++i) {
-                Vector3 pos = transform.position + Vector3.up * 0.5f + UnityEngine.Random.insideUnitSphere * 0.3f;
-                Instantiate(corePrefab, pos, UnityEngine.Random.rotation);
-            }
+            if (EnabledVisuals != null && EnabledVisuals.activeSelf != IsActive) { EnabledVisuals.SetActive(IsActive); }
         }
     }
 }

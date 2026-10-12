@@ -26,4 +26,34 @@ namespace DvergerAutomation {
             }
         }
     }
+
+    /// <summary>
+    /// Takes a stacking station's batch the moment an item joins it, rather than when the batch is full
+    /// (see <see cref="HopperNetwork.CollectBatch"/>). <c>QueueProcessed</c> only runs on the station's
+    /// owner, inside its own update.
+    /// </summary>
+    [HarmonyPatch(typeof(Smelter), "QueueProcessed")]
+    internal static class Smelter_QueueProcessed_Patch {
+        private static void Postfix(Smelter __instance) {
+            try {
+                HopperNetwork.CollectBatch(__instance);
+            } catch (System.Exception ex) {
+                // The batch stays in the station, and its next flush spawns it as usual.
+                Logger.LogError($"Hopper: collecting a smelter's batch failed: {ex}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Counts stations as they load, so a hopper knows when one may have appeared in its range. A
+    /// placement ghost has no ZDO and is left out.
+    /// </summary>
+    [HarmonyPatch(typeof(Smelter), "Awake")]
+    internal static class Smelter_Awake_Patch {
+        private static void Postfix(Smelter __instance) {
+            if (__instance.m_nview != null && __instance.m_nview.GetZDO() != null) {
+                HopperNetwork.NoteStationLoaded();
+            }
+        }
+    }
 }

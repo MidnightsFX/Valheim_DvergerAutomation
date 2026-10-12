@@ -66,7 +66,8 @@ namespace DvergerAutomation {
         private static bool BuiltToShare(Container container, ZNetView nview) {
             GameObject root = nview.gameObject;
             if (root.GetComponent<Piece>() == null && root.GetComponent<Ship>() == null && root.GetComponent<Vagon>() == null) { return false; }
-            if (container.GetComponentInParent<AutomationHub>() != null || container.GetComponentInParent<HopperHub>() != null) { return false; }
+            if (container.GetComponentInParent<AutomationHub>() != null || container.GetComponentInParent<HopperHub>() != null
+                || container.GetComponentInParent<GrinderHub>() != null || container.GetComponentInParent<LighterHub>() != null) { return false; }
             int sharing = 0;
             foreach (Container other in root.GetComponentsInChildren<Container>(includeInactive: true)) {
                 if (other.m_nview == nview) { ++sharing; }

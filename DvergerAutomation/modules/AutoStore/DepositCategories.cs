@@ -162,7 +162,7 @@ namespace DvergerAutomation {
         }
 
         /// <summary>Whether an item falls under this category, by the same rule the deposit applies.</summary>
-        private static bool Covers(DepositCategory category, ItemDrop.ItemData item) {
+        internal static bool Covers(DepositCategory category, ItemDrop.ItemData item) {
             bool food = item.m_shared.m_food > 0f;
             if (category.IsFood) { return food; }
             return !food && Array.IndexOf(category.Types, Normalize(item.m_shared.m_itemType)) >= 0;

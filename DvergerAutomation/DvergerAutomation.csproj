@@ -125,8 +125,9 @@
   </Target>
 
   <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
-    <Message Text="Copying embedded asset bundle" Importance="high" />
-    <Copy SourceFiles="$(ProjectDir)..\DvergerAutomationUnity\AssetBundles\StandaloneWindows\automation" DestinationFiles="$(ProjectDir)embedded\automation" SkipUnchangedFiles="true" />
+    <!-- A checkout whose Unity project has not built a bundle yet keeps the committed embedded one. -->
+    <Message Text="Copying embedded asset bundle" Importance="high" Condition="Exists('$(ProjectDir)..\DvergerAutomationUnity\AssetBundles\StandaloneWindows\automation')" />
+    <Copy SourceFiles="$(ProjectDir)..\DvergerAutomationUnity\AssetBundles\StandaloneWindows\automation" DestinationFiles="$(ProjectDir)embedded\automation" SkipUnchangedFiles="true" Condition="Exists('$(ProjectDir)..\DvergerAutomationUnity\AssetBundles\StandaloneWindows\automation')" />
   </Target>
 
   <!-- BEGIN mod-tools (managed block; replaced by `mod-tools setup`) -->

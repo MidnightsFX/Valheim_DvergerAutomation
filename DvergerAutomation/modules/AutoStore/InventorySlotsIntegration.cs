@@ -72,6 +72,9 @@ namespace DvergerAutomation {
                 this.eaqs = eaqs;
             }
 
+            /// <summary>The first row that belongs to the slot mod rather than the pack.</summary>
+            internal int FirstSlotRow => firstSlotRow;
+
             /// <summary>
             /// Which kind of cell this item sits in. Quick cells are matched by position rather than by
             /// item instance, which is how AzuAutoStore does it too: the APIs hand back the items the

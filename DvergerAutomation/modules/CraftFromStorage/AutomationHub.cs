@@ -1,33 +1,21 @@
-using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace DvergerAutomation {
     /// <summary>
-    /// MonoBehaviour for the DA_Autosorter piece. Attached to the prefab in Unity (not in code).
+    /// MonoBehaviour for the DA_Autosorter piece. Attached to the prefab in Unity (not in code), next to
+    /// the <see cref="CoreSockets"/> holding its four Surtling Cores.
     /// On a timer it links nearby crafting stations and nearby accessible storage chests, turning the
     /// chests into a shared material pool. The actual "use chest items while crafting/building" behaviour
     /// is applied by the Harmony patches in CraftFromStoragePatches, which read this hub's links via
     /// <see cref="ContainerNetwork"/>.
     /// </summary>
     public class AutomationHub : MonoBehaviour {
-        public Switch CoreSwitch1;
-        public Switch CoreSwitch2;
-        public Switch CoreSwitch3;
-        public Switch CoreSwitch4;
-        public GameObject Core1Visual;
-        public GameObject Core2Visual;
-        public GameObject Core3Visual;
-        public GameObject Core4Visual;
-
-        public GameObject EnabledVisuals;
-
-        // ZDO key holding the inserted-core bitmask (bit n set => slot n filled). Persisted/synced so the
-        // active state, lit visuals and extended range survive reloads and replicate to other clients.
-        private const string CoreMaskKey = "DA_cores";
+        private const string NameToken = "$DA_autosorter_name";
 
         private ZNetView nview;
+        private CoreSockets sockets;
 
         // Links produced by the most recent scan. Read by ContainerNetwork.
         internal readonly HashSet<CraftingStation> LinkedStations = new HashSet<CraftingStation>();
@@ -49,7 +37,6 @@ namespace DvergerAutomation {
 
         private Coroutine scanLoop;
         private Coroutine vehicleLoop;
-        private static int pieceMask = 0;
 
         // For a while after a hub loads - a player arriving through a portal, logging in, or walking
         // back into range - the chests around it are still streaming in: nearest to the player first,
@@ -65,26 +52,20 @@ namespace DvergerAutomation {
             nview = GetComponent<ZNetView>();
             // The only Container under the piece is the deposit box; the root itself has none.
             DepositBox = GetComponentInChildren<Container>(includeInactive: true);
+            sockets = GetComponent<CoreSockets>();
+            if (sockets != null) {
+                sockets.SetHoverName(NameToken);
+                sockets.Changed += OnCoresChanged;
+            }
             if (nview != null && nview.GetZDO() != null) {
-                nview.Register("DA_RefreshCores", new Action<long>(RPC_RefreshCores));
-                nview.Register<int, bool>("DA_SorterCoreRequest", RPC_CoreRequest);
-                nview.Register<int, bool>("DA_SorterCoreResult", RPC_CoreResult);
-                WearNTear wnt = GetComponent<WearNTear>();
-                if (wnt != null) { wnt.m_onDestroyed += OnDestroyedDropCores; }
                 // Live pieces only - the placement ghost has no ZDO and no inventory to size or protect.
                 // Registered here rather than in OnEnable because Container.Load can run for the box as soon as
                 // its first CheckForChanges tick, and the load guard has to recognise it by then.
                 AutoStore.RegisterDepositBox(DepositBox);
             }
 
-            // The Switch callbacks are C# delegates and cannot be assigned in Unity, so wire them here.
-            WireSwitch(CoreSwitch1, 0);
-            WireSwitch(CoreSwitch2, 1);
-            WireSwitch(CoreSwitch3, 2);
-            WireSwitch(CoreSwitch4, 3);
-
-            // Refresh visuals shortly after load (and periodically) so a late ZDO sync still lights up.
-            InvokeRepeating(nameof(UpdateVisuals), 1f, 4f);
+            // Has to be repeated: only the owner may mark the ZDO, and this client may become it later.
+            InvokeRepeating(nameof(KeepExclusive), 1f, 4f);
         }
 
         private void OnEnable() {
@@ -110,6 +91,7 @@ namespace DvergerAutomation {
 
         private void OnDestroy() {
             AutoStore.UnregisterDepositBox(DepositBox);
+            if (sockets != null) { sockets.Changed -= OnCoresChanged; }
         }
 
         private IEnumerator ScanLoopRoutine() {
@@ -164,7 +146,7 @@ namespace DvergerAutomation {
 
             // Gated inactive: with no cores inserted the hub links nothing (feature off) when required.
             if (ValConfig.RequireCores.Value && CoreCount == 0) {
-                ContainerNetwork.RebuildStationCache();
+                ContainerNetwork.LinksChanged();
                 return;
             }
 
@@ -180,22 +162,9 @@ namespace DvergerAutomation {
                 }
             }
 
-            // Containers: overlap the piece layers and resolve the owning Container component.
-            if (pieceMask == 0) { pieceMask = LayerMask.GetMask("piece", "piece_nonsolid"); }
-            Collider[] hits = Physics.OverlapSphere(pos, radius, pieceMask);
-            HashSet<Container> seen = new HashSet<Container>();
-            foreach (Collider hit in hits) {
-                if (hit == null) { continue; }
-                Container container = hit.GetComponentInParent<Container>();
-                if (container == null || !seen.Add(container)) { continue; }
-                // An autosorter's own deposit box holds items waiting to be sorted, not storage: never a
-                // crafting source, and never a sort target - it holds the very items being sorted, so it
-                // would match everything and file them straight back into itself.
-                if (container.GetComponentInParent<AutomationHub>() != null) { continue; }
-                if (IsAccessible(container, playerId)) {
-                    LinkedContainers.Add(container);
-                }
-            }
+            // Containers: every chest on the piece layers the player could open. The Hopper's store is
+            // crafting stock like any chest; AutoStore keeps it out of the sort targets itself.
+            StorageScan.CollectChests(pos, radius, playerId, LinkedContainers, requireResolvable: false, includeHopperStores: true);
 
             // After the chests, so crafting spends out of this hub's chests before a boat's or cart's load.
             VehicleStorage.Collect(pos, radius, playerId, LinkedVehicles);
@@ -205,7 +174,7 @@ namespace DvergerAutomation {
                 Logger.LogInfo($"[Autosorter] scan linked {LinkedStations.Count} stations, {LinkedContainers.Count - LinkedVehicles.Count} chests, {LinkedVehicles.Count} boats/carts within {radius}m.");
             }
 
-            ContainerNetwork.RebuildStationCache();
+            ContainerNetwork.LinksChanged();
         }
 
         // The vehicle half of Scan on its own: swaps this hub's boat and cart links for whatever is in
@@ -226,7 +195,7 @@ namespace DvergerAutomation {
             if (ValConfig.EnableDebugMode.Value) {
                 Logger.LogInfo($"[Autosorter] relinked {LinkedVehicles.Count} boats/carts.");
             }
-            ContainerNetwork.RebuildStationCache();
+            ContainerNetwork.LinksChanged();
         }
 
         private static bool SameVehicles(Dictionary<Container, MonoBehaviour> a, Dictionary<Container, MonoBehaviour> b) {
@@ -256,138 +225,20 @@ namespace DvergerAutomation {
 
         // ---- Surtling Core slots --------------------------------------------
 
-        // Current inserted-core bitmask from the ZDO (0 when the network view is not yet valid).
-        private int GetCoreMask() {
-            if (nview == null || !nview.IsValid()) { return 0; }
-            return nview.GetZDO().GetInt(CoreMaskKey, 0);
-        }
-
-        /// <summary>Number of inserted cores (0-4).</summary>
-        internal int CoreCount {
-            get {
-                int mask = GetCoreMask();
-                int count = 0;
-                for (int slot = 0; slot < 4; ++slot) {
-                    if ((mask & (1 << slot)) != 0) { ++count; }
-                }
-                return count;
-            }
-        }
-
-        /// <summary>The hub is active once at least one core is inserted.</summary>
-        internal bool IsActive => GetCoreMask() != 0;
+        /// <summary>Number of inserted cores (0-4), held by the piece's <see cref="CoreSockets"/>.</summary>
+        internal int CoreCount => sockets != null ? sockets.Count : 0;
 
         /// <summary>Base link radius plus the configured bonus for each inserted core.</summary>
         internal float EffectiveRadius => ValConfig.ScanRadius.Value + CoreCount * ValConfig.RangePerCore.Value;
 
-        /// <summary>
-        /// Owner side of a core socket being used (the exchange is described on <see cref="SurtlingCore"/>):
-        /// the mask shares this ZDO with the deposit box's items, so only the owner writes it. A request
-        /// that finds the slot already in the asked-for state - two players at once - changes nothing and
-        /// is not answered.
-        /// </summary>
-        private void RPC_CoreRequest(long sender, int slot, bool insert) {
-            if (nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
-            if (slot < 0 || slot >= 4) { return; }
-            int mask = GetCoreMask();
-            int bit = 1 << slot;
-            if (((mask & bit) != 0) == insert) { return; }
-
-            nview.GetZDO().Set(CoreMaskKey, insert ? mask | bit : mask & ~bit);
-            nview.InvokeRPC(sender, "DA_SorterCoreResult", slot, insert);
-            // Everybody includes this client: every copy refreshes its visuals and relinks.
-            nview.InvokeRPC(ZNetView.Everybody, "DA_RefreshCores");
-        }
-
-        private void RPC_CoreResult(long sender, int slot, bool inserted) {
-            SurtlingCore.Settle(inserted);
-        }
-
-        private void RPC_RefreshCores(long sender) {
-            UpdateVisuals();
-            // Relink immediately so the new range / active state applies without waiting for the scan tick.
+        // Runs on every client: each copy relinks at once, so the new range or active state applies
+        // without waiting for the scan tick.
+        private void OnCoresChanged() {
             if (ValConfig.AutomationEnabled.Value && Player.m_localPlayer != null) { Scan(); }
         }
 
-        private void WireSwitch(Switch sw, int slot) {
-            if (sw == null) { return; }
-            sw.m_onUse = OnCoreSwitchUsed;
-            sw.m_onHover = () => GetSwitchHover(slot);
-            sw.m_name = "$DA_autosorter_name";
-        }
-
-        private int SlotForSwitch(Switch caller) {
-            if (caller == CoreSwitch1) { return 0; }
-            if (caller == CoreSwitch2) { return 1; }
-            if (caller == CoreSwitch3) { return 2; }
-            if (caller == CoreSwitch4) { return 3; }
-            return -1;
-        }
-
-        // Switch use: insert a core into an empty slot (consuming one from the player) or remove a core
-        // from a filled slot (returning one to the player).
-        private bool OnCoreSwitchUsed(Switch caller, Humanoid user, ItemDrop.ItemData item) {
-            int slot = SlotForSwitch(caller);
-            if (slot < 0) { return false; }
-            if (!(user is Player player)) { return false; }
-            if (!PrivateArea.CheckAccess(transform.position)) { return false; }
-            if (nview == null || !nview.IsValid()) { return false; }
-
-            GameObject corePrefab = SurtlingCore.Prefab;
-            if (corePrefab == null) { return false; }
-            string coreName = SurtlingCore.SharedName(corePrefab);
-
-            bool filled = (GetCoreMask() & (1 << slot)) != 0;
-            if (filled) {
-                if (!player.GetInventory().CanAddItem(corePrefab, 1)) {
-                    user.Message(MessageHud.MessageType.Center, "$inventory_full");
-                    return false;
-                }
-            } else if (player.GetInventory().CountItems(coreName) <= 0) {
-                user.Message(MessageHud.MessageType.Center, "$DA_Need_Core");
-                return false;
-            }
-
-            // Asked of the owner rather than written here (see SurtlingCore). When this client is the
-            // owner, both RPCs run synchronously.
-            nview.InvokeRPC("DA_SorterCoreRequest", slot, !filled);
-            return true;
-        }
-
-        private string GetSwitchHover(int slot) {
-            bool filled = (GetCoreMask() & (1 << slot)) != 0;
-            string action = filled ? "$DA_Remove_Core" : "$DA_Add_Core";
-            return Localization.instance.Localize("[<color=yellow><b>$KEY_Use</b></color>] " + action);
-        }
-
-        // Reflects the inserted-core bitmask onto the per-slot visuals and the overall active visual.
-        private void UpdateVisuals() {
-            if (nview == null || !nview.IsValid()) { return; }
-            // Rides this timer because it has to be repeated, not because it is a visual.
+        private void KeepExclusive() {
             MultiUserChestIntegration.KeepExclusive(nview);
-            int mask = GetCoreMask();
-            SetActiveSafe(Core1Visual, (mask & 1) != 0);
-            SetActiveSafe(Core2Visual, (mask & 2) != 0);
-            SetActiveSafe(Core3Visual, (mask & 4) != 0);
-            SetActiveSafe(Core4Visual, (mask & 8) != 0);
-            SetActiveSafe(EnabledVisuals, mask != 0);
-        }
-
-        private static void SetActiveSafe(GameObject go, bool active) {
-            if (go != null && go.activeSelf != active) { go.SetActive(active); }
-        }
-
-        // On destroy/deconstruct, drop the inserted cores so they are not lost.
-        private void OnDestroyedDropCores() {
-            if (nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
-            int count = CoreCount;
-            if (count <= 0) { return; }
-            GameObject corePrefab = SurtlingCore.Prefab;
-            if (corePrefab == null) { return; }
-            for (int i = 0; i < count; ++i) {
-                Vector3 pos = transform.position + Vector3.up * 0.5f + UnityEngine.Random.insideUnitSphere * 0.3f;
-                Instantiate(corePrefab, pos, UnityEngine.Random.rotation);
-            }
         }
     }
 
@@ -398,10 +249,12 @@ namespace DvergerAutomation {
     internal static class ContainerNetwork {
         internal static readonly List<AutomationHub> Hubs = new List<AutomationHub>();
 
-        // Cached map rebuilt only when a hub scans / (un)registers - not on every crafting check.
+        // Cached map rebuilt only after a hub scans / (un)registers - not on every crafting check - and
+        // then lazily, on the next lookup, so several hubs scanning in a row rebuild it once.
         private static readonly Dictionary<CraftingStation, List<Container>> StationToContainers =
             new Dictionary<CraftingStation, List<Container>>();
-        // Scratch set reused across RebuildStationCache to dedup a station's containers in O(1).
+        private static bool linksChanged = true;
+        // Scratch set reused across EnsureStationCache to dedup a station's containers in O(1).
         private static readonly HashSet<Container> RebuildSeen = new HashSet<Container>();
 
         // Every boat hold / cart bed any hub links, mapped to the vehicle carrying it. IsBusy asks this
@@ -415,13 +268,19 @@ namespace DvergerAutomation {
         // client-side switch needs no separate test anywhere else.
         private static readonly List<Container> Empty = new List<Container>();
 
-        // Frame-memoized aggregate of item-name -> total stack across a container pool. Crafting/build
-        // queries fan out across hundreds of recipes (panel refresh) and the selected recipe (every
-        // frame); without this, each query rescans every chest's inventory and the game freezes once a
-        // few hundred chests are linked. Rebuilt at most once per frame per pool reference.
+        // Aggregate of item-name -> total stack across a container pool. Crafting/build queries fan out
+        // across hundreds of recipes (panel refresh) and the selected recipe (every frame); without this,
+        // each query rescans every chest's inventory and the game freezes once a few hundred chests are
+        // linked. Checked at most once per frame per pool reference, and only rebuilt when the pool or
+        // one of its chests has changed since (see AggregateCurrent).
         private static readonly Dictionary<string, int> AggCounts = new Dictionary<string, int>();
         private static int aggFrame = -1;
         private static List<Container> aggPool;
+        // What the aggregate was built from: each chest in pool order, with the revision of its grid.
+        private static readonly List<Container> AggSources = new List<Container>();
+        private static readonly List<long> AggRevisions = new List<long>();
+        private static int aggWorldLevel;
+        private static bool aggBuilt;
 
         // The same aggregate over only the chests this client owns - what can be spent without asking
         // anyone (see StorageOwnership). Kept apart so the two never evict each other within a frame.
@@ -438,15 +297,27 @@ namespace DvergerAutomation {
 
         internal static void Register(AutomationHub hub) {
             if (!Hubs.Contains(hub)) { Hubs.Add(hub); }
-            RebuildStationCache();
+            LinksChanged();
         }
 
         internal static void Unregister(AutomationHub hub) {
             Hubs.Remove(hub);
-            RebuildStationCache();
+            LinksChanged();
         }
 
-        internal static void RebuildStationCache() {
+        /// <summary>
+        /// A hub's links changed. The station cache is rebuilt on its next lookup, and the near-point and
+        /// count caches start over now.
+        /// </summary>
+        internal static void LinksChanged() {
+            linksChanged = true;
+            nearPointFrame = -1;
+            InvalidateItemCounts();
+        }
+
+        private static void EnsureStationCache() {
+            if (!linksChanged) { return; }
+            linksChanged = false;
             StationToContainers.Clear();
             Carriers.Clear();
             foreach (AutomationHub hub in Hubs) {
@@ -469,18 +340,16 @@ namespace DvergerAutomation {
                     }
                 }
             }
-            // Chest membership changed: invalidate the frame-memoized aggregate / near-point caches.
-            nearPointFrame = -1;
-            InvalidateItemCounts();
         }
 
         /// <summary>
-        /// Drops the frame-memoized item aggregate. Chest *membership* changes go through
-        /// <see cref="RebuildStationCache"/>, but chest *contents* can change under us - auto-store moving
-        /// items in, crafting taking them out - and the aggregate would otherwise serve counts from before
-        /// the change for the rest of the frame.
+        /// Drops the item aggregates. Chest *membership* changes go through <see cref="LinksChanged"/>,
+        /// but chest *contents* can change under us - auto-store moving items in, crafting taking them out
+        /// - and the aggregate would otherwise serve counts from before the change for the rest of the
+        /// frame.
         /// </summary>
         internal static void InvalidateItemCounts() {
+            aggBuilt = false;
             aggFrame = -1;
             aggPool = null;
             spendFrame = -1;
@@ -491,12 +360,14 @@ namespace DvergerAutomation {
 
         /// <summary>The boat or cart carrying a linked container; false for a plain chest.</summary>
         internal static bool TryGetCarrier(Container container, out MonoBehaviour carrier) {
+            EnsureStationCache();
             return Carriers.TryGetValue(container, out carrier);
         }
 
         /// <summary>Containers linked to the given crafting station (station-crafting pool). O(1) lookup.</summary>
         internal static List<Container> GetContainersForStation(CraftingStation station) {
             if (!ValConfig.CraftFromStorageEnabled.Value) { return Empty; }
+            EnsureStationCache();
             if (station != null && StationToContainers.TryGetValue(station, out List<Container> list)) {
                 return list;
             }
@@ -530,17 +401,48 @@ namespace DvergerAutomation {
 
         /// <summary>
         /// Total stack count of <paramref name="name"/> across the pool, matching vanilla
-        /// <c>Inventory.CountItems(name, -1, matchWorldLevel: true)</c>. Backed by a per-pool aggregate
-        /// rebuilt at most once per frame, turning each query into an O(1) dictionary lookup.
+        /// <c>Inventory.CountItems(name, -1, matchWorldLevel: true)</c>. Backed by an aggregate that is
+        /// only rebuilt when the pool or a chest in it has changed, turning each query into an O(1)
+        /// dictionary lookup.
         /// </summary>
         internal static int CountInPool(List<Container> pool, string name) {
             if (pool == null || pool.Count == 0) { return 0; }
             if (aggFrame != Time.frameCount || !ReferenceEquals(aggPool, pool)) {
-                BuildAggregate(pool, AggCounts, spendableOnly: false);
+                if (!AggregateCurrent(pool)) {
+                    BuildAggregate(pool, AggCounts, spendableOnly: false);
+                    AggSources.Clear();
+                    AggRevisions.Clear();
+                    foreach (Container container in pool) {
+                        AggSources.Add(container);
+                        AggRevisions.Add(GridRevision(container));
+                    }
+                    aggWorldLevel = Game.m_worldLevel;
+                    aggBuilt = true;
+                }
                 aggFrame = Time.frameCount;
                 aggPool = pool;
             }
             return AggCounts.TryGetValue(name, out int total) ? total : 0;
+        }
+
+        /// <summary>
+        /// Whether the aggregate still describes the pool: the same chests in the same order, none of
+        /// whose grids has changed here since. A chest's <c>m_lastRevision</c> moves exactly when its copy
+        /// here does - this client saving it, or reloading it from the ZDO - so comparing one number per
+        /// chest stands in for re-reading every item in it.
+        /// </summary>
+        private static bool AggregateCurrent(List<Container> pool) {
+            if (!aggBuilt || aggWorldLevel != Game.m_worldLevel || pool.Count != AggSources.Count) { return false; }
+            for (int i = 0; i < pool.Count; ++i) {
+                if (!ReferenceEquals(pool[i], AggSources[i]) || GridRevision(pool[i]) != AggRevisions[i]) { return false; }
+            }
+            return true;
+        }
+
+        // -1 for a chest the aggregate skips, so one coming back counts as a change.
+        private static long GridRevision(Container container) {
+            if (container == null || container.m_nview == null || !container.m_nview.IsValid() || container.GetInventory() == null) { return -1; }
+            return container.m_lastRevision;
         }
 
         /// <summary>
