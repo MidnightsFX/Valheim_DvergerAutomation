@@ -39,7 +39,7 @@ namespace DvergerAutomation {
             if (player == null) { return 0; }
             int max = Mathf.Max(1, item.m_shared.m_maxStackSize);
             Inventory inv = player.GetInventory();
-            int room = InventoryOps.FreeSpaceFor(inv, item) - EmptySlotRowCells(inv) * max;
+            int room = SlotModLimit(inv, item, InventoryOps.FreeSpaceFor(inv, item));
             foreach (Delivery delivery in Deliveries) {
                 if (max > 1 && ItemIdentity.SameStack(delivery.Prototype, item)) {
                     room -= delivery.Amount;
@@ -54,18 +54,27 @@ namespace DvergerAutomation {
         }
 
         // An inventory mod's quick and equipment slots are extra rows of the same grid (see
-        // InventorySlotsIntegration), so their empty cells read as free space. A take is not going into them,
-        // and counting them would ask for more than the pack holds, the rest landing at the player's feet.
-        private static int EmptySlotRowCells(Inventory inv) {
-            if (!InventorySlotsIntegration.Active) { return 0; }
-            int firstRow = InventorySlotsIntegration.Take(inv).FirstSlotRow;
-            int height = inv.GetHeight();
-            if (firstRow >= height) { return 0; }
-            int cells = (height - firstRow) * inv.GetWidth();
-            foreach (ItemDrop.ItemData held in inv.GetAllItems()) {
-                if (held.m_gridPos.y >= firstRow) { --cells; }
+        // InventorySlotsIntegration). Each of the three already answers GetEmptySlots for the pack alone, plus
+        // its free quick slots, which a take does fill: their AddItem moves on to them once the pack is full.
+        // AzuEPI's also counts free equipment slots, which only take gear, so asking for that much wood would
+        // land the rest at the player's feet. The mod's CanAddItem - the question vanilla's pickup asks, and
+        // which each one answers for the item at hand - has the last word.
+        private static int SlotModLimit(Inventory inv, ItemDrop.ItemData item, int room) {
+            if (room <= 0 || !InventorySlotsIntegration.Active || inv.CanAddItem(item, room)) { return room; }
+            // CanAddItem reads a stack of 0 as "the item's own stack", so the search never asks for none.
+            int fits = 0;
+            int low = 1;
+            int high = room - 1;
+            while (low <= high) {
+                int mid = low + (high - low) / 2;
+                if (inv.CanAddItem(item, mid)) {
+                    fits = mid;
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
             }
-            return Mathf.Max(0, cells);
+            return fits;
         }
 
         /// <summary>The most of <paramref name="entry"/> one take may ask for.</summary>

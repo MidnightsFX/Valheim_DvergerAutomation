@@ -1,3 +1,6 @@
+**0.12.3**
+- Fixes the Seeking Table saying the inventory is full when taking items with ExtraSlots
+
 **0.12.2**
 - Improves ward ownership check compatibility with other mods
 
