@@ -21,12 +21,26 @@ namespace DvergerAutomation {
     public class LighterHub : MonoBehaviour, Hoverable, Interactable {
         // ---- Unity-wired references ----------------------------------------
 
-        /// <summary>Shown while the Lighter has fuel for something in range: smoke from its chimney.</summary>
+        /// <summary>
+        /// Shown while the Lighter is switched on and has fuel for something in range: wisps of smoke from
+        /// all three of its upward pipes.
+        /// </summary>
         public GameObject ActiveVisuals;
+
+        /// <summary>
+        /// Under <see cref="ActiveVisuals"/>: the centre column's <see cref="SmokeSpawner"/>, which puffs
+        /// out the same smoke a fire does. Shown only while the server allows it (Physical Smoke).
+        /// </summary>
+        public GameObject PhysicalSmoke;
 
         // ---- state ----------------------------------------------------------
 
         internal const string NameToken = "$DA_lighter_name";
+
+        /// <summary>Rows in the fuel tank, as the server's Storage Rows setting allows them.</summary>
+        internal const int MinStoreRows = 1;
+        internal const int MaxStoreRows = 8;
+        internal const int DefaultStoreRows = 2;
 
         internal static readonly List<LighterHub> All = new List<LighterHub>();
 
@@ -36,7 +50,9 @@ namespace DvergerAutomation {
         // Reused by every pass, so a tick does not allocate.
         private readonly List<Component> inRange = new List<Component>();
         private readonly List<Component> toFill = new List<Component>();
+        private readonly List<int> amounts = new List<int>();
         private readonly Dictionary<string, int> stock = new Dictionary<string, int>();
+        private readonly Dictionary<string, int> taken = new Dictionary<string, int>();
 
         /// <summary>The fuel tank. Resolved from the hierarchy, so the prefab needs no extra wiring.</summary>
         internal Container Store { get; private set; }
@@ -66,21 +82,11 @@ namespace DvergerAutomation {
 
         // ---- the server's ignore list -------------------------------------------
 
-        private static readonly HashSet<string> ignored = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        private static string ignoredParsedFrom;
+        private static readonly NameSet Ignored = new NameSet(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>Whether the server has told Lighters to leave this piece alone.</summary>
         internal static bool IsIgnored(string prefabName) {
-            string list = ValConfig.LighterIgnoredPieces.Value ?? "";
-            if (list != ignoredParsedFrom) {
-                ignored.Clear();
-                foreach (string part in list.Split(',')) {
-                    string name = part.Trim();
-                    if (name.Length > 0) { ignored.Add(name); }
-                }
-                ignoredParsedFrom = list;
-            }
-            return ignored.Count > 0 && ignored.Contains(prefabName);
+            return Ignored.Contains(ValConfig.LighterIgnoredPieces.Value, prefabName);
         }
 
         // ---- the owner ----------------------------------------------------------
@@ -107,8 +113,10 @@ namespace DvergerAutomation {
             if (!ValConfig.LighterEnabled.Value || Store == null) { return; }
             // Someone has the tank open. Writing to it under them would blank their panel, so the Lighter
             // waits until they close it.
-            if (CraftFromStoragePatches.IsBusy(Store)) { return; }
-            SyncStore();
+            if (StorageOwnership.IsBusy(Store)) { return; }
+            // For up to a second after this client becomes the owner its grid can be older than the one
+            // the previous owner saved.
+            StorageOwnership.Sync(Store);
             Inventory inv = Store.GetInventory();
             if (inv == null || inv.NrOfItems() == 0) { return; }
 
@@ -129,21 +137,32 @@ namespace DvergerAutomation {
             if (toFill.Count == 0) { return; }
             toFill.Sort((a, b) => FuelBurners.Fill(a).CompareTo(FuelBurners.Fill(b)));
 
-            int pieces = 0;
-            int units = 0;
+            // Shared out first, emptiest first, against what the tank holds.
+            amounts.Clear();
+            taken.Clear();
             foreach (Component burner in toFill) {
                 string fuel = FuelBurners.FuelName(burner);
                 int add = Mathf.Min(FuelBurners.Room(burner), Stock(inv, fuel));
+                amounts.Add(add);
                 if (add <= 0) { continue; }
-                // Out of the tank first, then into the piece. This client owns both, so nothing in between
-                // can see the fuel in both places or in neither. Not world-level based, to match the count:
-                // otherwise fuel from before a world level change is counted but never removed, and the
-                // piece is fed for free.
-                inv.RemoveItem(fuel, add, -1, worldLevelBased: false);
                 stock[fuel] -= add;
-                FuelBurners.Add(burner, add);
+                taken.TryGetValue(fuel, out int sofar);
+                taken[fuel] = sofar + add;
+            }
+            // Then out of the tank, one removal per fuel - each one saves the whole tank - and into the
+            // pieces. This client owns all of them and nothing runs in between, so nothing can see the
+            // fuel in both places or in neither. Not world-level based, to match the count: otherwise fuel
+            // from before a world level change is counted but never removed, and the piece is fed for free.
+            foreach (KeyValuePair<string, int> fuel in taken) {
+                inv.RemoveItem(fuel.Key, fuel.Value, -1, worldLevelBased: false);
+            }
+            int pieces = 0;
+            int units = 0;
+            for (int i = 0; i < toFill.Count; ++i) {
+                if (amounts[i] <= 0) { continue; }
+                FuelBurners.Add(toFill[i], amounts[i]);
                 ++pieces;
-                units += add;
+                units += amounts[i];
             }
 
             if (pieces > 0 && ValConfig.EnableDebugMode.Value) {
@@ -158,15 +177,6 @@ namespace DvergerAutomation {
                 stock[fuel] = have;
             }
             return have;
-        }
-
-        /// <summary>
-        /// Brings the tank's grid up to date with its ZDO before anything writes to it, as the Hopper's
-        /// <see cref="HopperHub.SyncStore"/> does, for the same reason: for up to a second after this client
-        /// becomes the owner its grid can be older than the one the previous owner saved.
-        /// </summary>
-        private void SyncStore() {
-            if (Store != null && !Store.IsInUse()) { Store.Load(); }
         }
 
         /// <summary>
@@ -197,6 +207,8 @@ namespace DvergerAutomation {
         private int surveyTended;
         private bool surveyHasFuel;
         private readonly List<string> surveyMissing = new List<string>();
+        // The hover's line naming what is missing, built with the survey rather than every frame.
+        private string surveyNeeds = "";
 
         private void Survey() {
             if (Time.time - surveyedAt < SurveySeconds) { return; }
@@ -204,6 +216,7 @@ namespace DvergerAutomation {
             surveyTended = 0;
             surveyHasFuel = false;
             surveyMissing.Clear();
+            surveyNeeds = "";
             if (!IsLive || !ValConfig.LighterEnabled.Value) { return; }
 
             Inventory inv = Store != null ? Store.GetInventory() : null;
@@ -219,12 +232,25 @@ namespace DvergerAutomation {
                     surveyMissing.Add(fuel);
                 }
             }
+            if (surveyMissing.Count > 0) {
+                List<string> names = new List<string>();
+                foreach (string fuel in surveyMissing) { names.Add(Localization.instance.Localize(fuel)); }
+                surveyNeeds = "\n" + Localization.instance.Localize("$DA_lighter_needs", string.Join(", ", names));
+            }
         }
 
+        // Read again every pass rather than on a setting change, so a value synced from the server is picked
+        // up within a couple of seconds wherever it arrives from.
         private void UpdateVisuals() {
-            if (!IsLive) { return; }
+            // A dedicated server draws nothing.
+            if (!IsLive || ZNet.instance == null || ZNet.instance.IsDedicated()) { return; }
             Survey();
-            if (ActiveVisuals != null && ActiveVisuals.activeSelf != surveyHasFuel) { ActiveVisuals.SetActive(surveyHasFuel); }
+            SetActiveSafe(ActiveVisuals, surveyHasFuel);
+            SetActiveSafe(PhysicalSmoke, ValConfig.LighterPhysicalSmoke.Value);
+        }
+
+        private static void SetActiveSafe(GameObject go, bool active) {
+            if (go != null && go.activeSelf != active) { go.SetActive(active); }
         }
 
         // ---- Hoverable / Interactable: the body opens the tank ----------------------------
@@ -240,13 +266,9 @@ namespace DvergerAutomation {
                 text += "\n" + (surveyTended > 0
                     ? Localization.instance.Localize("$DA_lighter_status", surveyTended.ToString(), range)
                     : Localization.instance.Localize("$DA_lighter_nothing", range));
-                if (surveyMissing.Count > 0) {
-                    List<string> names = new List<string>();
-                    foreach (string fuel in surveyMissing) { names.Add(Localization.instance.Localize(fuel)); }
-                    text += "\n" + Localization.instance.Localize("$DA_lighter_needs", string.Join(", ", names));
-                }
+                text += surveyNeeds;
             }
-            if (!PrivateArea.CheckAccess(transform.position, 0f, flash: false)) {
+            if (!StorageScan.Permits(transform.position, StorageScan.LocalPlayerId())) {
                 return Localization.instance.Localize(text + "\n$piece_noaccess");
             }
             return Localization.instance.Localize(text + "\n[<color=yellow><b>$KEY_Use</b></color>] $DA_lighter_open");

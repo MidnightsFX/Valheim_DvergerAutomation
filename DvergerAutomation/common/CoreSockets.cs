@@ -46,6 +46,8 @@ namespace DvergerAutomation {
         internal Func<string> StatusLine;
 
         private ZNetView nview;
+        // MaskKey hashed once: the mask is read every frame wherever a piece shows whether it is awake.
+        private int maskHash;
         private string requestRpc;
         private string resultRpc;
         private string revokeRpc;
@@ -53,6 +55,7 @@ namespace DvergerAutomation {
 
         private void Awake() {
             nview = GetComponentInParent<ZNetView>();
+            maskHash = MaskKey.GetStableHashCode();
             requestRpc = MaskKey + "_request";
             resultRpc = MaskKey + "_result";
             revokeRpc = MaskKey + "_revoke";
@@ -81,7 +84,7 @@ namespace DvergerAutomation {
         private int Mask {
             get {
                 if (nview == null || !nview.IsValid()) { return 0; }
-                return nview.GetZDO().GetInt(MaskKey, 0);
+                return nview.GetZDO().GetInt(maskHash, 0);
             }
         }
 
@@ -118,7 +121,7 @@ namespace DvergerAutomation {
             int bit = 1 << slot;
             if (((mask & bit) != 0) == insert) { return; }
 
-            nview.GetZDO().Set(MaskKey, insert ? mask | bit : mask & ~bit);
+            nview.GetZDO().Set(maskHash, insert ? mask | bit : mask & ~bit);
             nview.InvokeRPC(sender, resultRpc, slot, insert);
             // Everybody includes this client.
             nview.InvokeRPC(ZNetView.Everybody, refreshRpc);
@@ -128,7 +131,7 @@ namespace DvergerAutomation {
         private void RPC_Revoke(long sender, int slot) {
             if (nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
             if (slot < 0 || slot >= SlotCount || !IsFilled(slot)) { return; }
-            nview.GetZDO().Set(MaskKey, Mask & ~(1 << slot));
+            nview.GetZDO().Set(maskHash, Mask & ~(1 << slot));
             nview.InvokeRPC(ZNetView.Everybody, refreshRpc);
         }
 
@@ -143,12 +146,24 @@ namespace DvergerAutomation {
         /// <summary>
         /// Once the owner has changed the socket: an insert takes the core from the pack; a removal returns
         /// it there, or at the player's feet if the pack filled up in the meantime. False only for an insert
-        /// whose core is no longer in the pack, so the socket was filled for nothing and has to be emptied.
+        /// that could not be paid for - its core is no longer in the pack, or there is no player to take it
+        /// from (they died while the request was out) - so the socket was filled for nothing and has to be
+        /// emptied.
         /// </summary>
         private bool Settle(bool inserted) {
             Player player = Player.m_localPlayer;
             GameObject prefab = FindItemPrefab();
-            if (player == null || prefab == null) { return true; }
+            if (prefab == null) { return true; }
+            if (player == null) {
+                if (inserted) { return false; }
+                // Taken out of its socket for a player who has died since: it waits for them to come back.
+                ItemDrop.ItemData core = prefab.GetComponent<ItemDrop>().m_itemData.Clone();
+                core.m_stack = 1;
+                core.m_dropPrefab = prefab;
+                core.m_worldLevel = Game.m_worldLevel;
+                PlayerDelivery.Give(core);
+                return true;
+            }
 
             Inventory inv = player.GetInventory();
             if (inserted) {
@@ -253,7 +268,9 @@ namespace DvergerAutomation {
             if (count <= 0 || prefab == null) { return; }
             for (int i = 0; i < count; ++i) {
                 Vector3 pos = transform.position + Vector3.up * 0.5f + UnityEngine.Random.insideUnitSphere * 0.3f;
-                Instantiate(prefab, pos, UnityEngine.Random.rotation);
+                // OnCreateNew stamps the world's level on the core, as any freshly made item gets: without it
+                // the core keeps the prefab's, and on a harder world no socket would count it as one again.
+                ItemDrop.OnCreateNew(Instantiate(prefab, pos, UnityEngine.Random.rotation));
             }
         }
     }

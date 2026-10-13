@@ -12,7 +12,7 @@ namespace DvergerAutomation {
     ///  - <see cref="Smelter"/> with no ore input (<c>m_maxOre</c> 0): the hot tub, which vanilla builds
     ///    as a smelter that burns wood and makes nothing. A Smelter that takes ore is the Hopper's job.
     ///
-    /// Each registers itself as it wakes (LighterPatches.cs), so a Lighter finds what is in
+    /// Each registers itself as it wakes (LighterPatches.cs, and HopperPatches.cs for the Smelter), so a Lighter finds what is in
     /// range by walking this list rather than overlapping every collider within 64 metres of it.
     ///
     /// All three refuse fuel the same way when a player adds it by hand: once whole units no longer fit
@@ -22,7 +22,16 @@ namespace DvergerAutomation {
     /// owner.
     /// </summary>
     internal static class FuelBurners {
-        private static readonly List<Component> All = new List<Component>();
+        // What InRange needs of each piece, read once as it registers: the piece it belongs to and its
+        // prefab name both take a lookup (the name an allocation), and InRange walks every piece.
+        private struct Entry {
+            internal Component Burner;
+            internal ZNetView View;
+            internal Piece Piece;
+            internal string Prefab;
+        }
+
+        private static readonly List<Entry> All = new List<Entry>();
         private static readonly HashSet<Component> Known = new HashSet<Component>();
 
         // Unloaded pieces leave destroyed entries behind; they are swept whenever a Lighter walks the list,
@@ -36,7 +45,12 @@ namespace DvergerAutomation {
             ZNetView view = ViewOf(burner);
             if (view == null || view.GetZDO() == null) { return; }
             if (!Known.Add(burner)) { return; }
-            All.Add(burner);
+            All.Add(new Entry {
+                Burner = burner,
+                View = view,
+                Piece = burner.GetComponentInParent<Piece>(),
+                Prefab = global::Utils.GetPrefabName(view.gameObject),
+            });
             if (All.Count > sweptAt * 2 + 64) { Sweep(); }
         }
 
@@ -44,8 +58,8 @@ namespace DvergerAutomation {
         // the set after it is gone.
         private static void Sweep() {
             for (int i = All.Count - 1; i >= 0; --i) {
-                if (All[i] != null) { continue; }
-                Known.Remove(All[i]);
+                if (All[i].Burner != null) { continue; }
+                Known.Remove(All[i].Burner);
                 All.RemoveAt(i);
             }
             sweptAt = All.Count;
@@ -61,15 +75,13 @@ namespace DvergerAutomation {
             bool swept = false;
             float sqr = radius * radius;
             for (int i = 0; i < All.Count; ++i) {
-                Component burner = All[i];
-                if (burner == null) { swept = true; continue; }
-                if ((burner.transform.position - center).sqrMagnitude > sqr) { continue; }
-                ZNetView view = ViewOf(burner);
-                if (view == null || !view.IsValid()) { continue; }
-                Piece piece = burner.GetComponentInParent<Piece>();
-                if (piece == null || !piece.IsPlacedByPlayer()) { continue; }
-                if (LighterHub.IsIgnored(PrefabName(burner))) { continue; }
-                into.Add(burner);
+                Entry entry = All[i];
+                if (entry.Burner == null) { swept = true; continue; }
+                if ((entry.Burner.transform.position - center).sqrMagnitude > sqr) { continue; }
+                if (entry.View == null || !entry.View.IsValid()) { continue; }
+                if (entry.Piece == null || !entry.Piece.IsPlacedByPlayer()) { continue; }
+                if (LighterHub.IsIgnored(entry.Prefab)) { continue; }
+                into.Add(entry.Burner);
             }
             if (swept) { Sweep(); }
         }
@@ -176,15 +188,11 @@ namespace DvergerAutomation {
         internal static Component Find(GameObject root) {
             if (root == null) { return null; }
             Component burner = root.GetComponentInChildren<Fireplace>();
-            if (burner == null) { burner = root.GetComponentInChildren<CookingStation>(); }
-            if (burner == null) { burner = root.GetComponentInChildren<Smelter>(); }
+            if (burner != null && Burns(burner)) { return burner; }
+            burner = root.GetComponentInChildren<CookingStation>();
+            if (burner != null && Burns(burner)) { return burner; }
+            burner = root.GetComponentInChildren<Smelter>();
             return burner != null && Burns(burner) ? burner : null;
-        }
-
-        /// <summary>The piece's prefab name, for the log and the server's ignore list.</summary>
-        internal static string PrefabName(Component burner) {
-            ZNetView view = ViewOf(burner);
-            return global::Utils.GetPrefabName(view != null ? view.gameObject : burner.gameObject);
         }
     }
 }

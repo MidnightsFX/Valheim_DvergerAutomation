@@ -27,13 +27,13 @@ namespace DvergerAutomation {
     /// wanting the same chest do not pass it back and forth - the first keeps it until they are done.
     ///
     /// A chest its owner has open is never handed over: that would pull the panel out from under them.
-    /// Nor is the Hopper's store, whose owner is feeding its stations from it and has asked for those
-    /// stations to come to it (see <see cref="HopperNetwork.AskForStation"/>): taking the store away would
-    /// leave every one of them unfed. Those are reached a different way, through the owner (see
+    /// Nor is a machine's store (see <see cref="StorageRegistry.IsMachineStore"/>), which shares the
+    /// machine's ZDO: handing the Hopper's store over would hand over the Hopper, leaving every station
+    /// it had asked for unfed. Those are reached a different way, through the owner (see
     /// <see cref="StorageRpc"/>): for crafting and building it takes the materials out itself and sends
     /// them across (see <see cref="StorageReserve"/>), and for auto-store it is sent the items to put in.
     /// The Hopper and Epic Loot's table still leave an open chest alone, and Epic Loot only draws on a
-    /// Hopper's store when this client runs that hopper.
+    /// machine's store when this client runs that machine.
     /// </summary>
     internal static class StorageOwnership {
         private const string RequestRpc = "DA_RequestStorage";
@@ -53,19 +53,43 @@ namespace DvergerAutomation {
         // it still does not own.
         private static readonly Dictionary<ZDOID, float> wantedSince = new Dictionary<ZDOID, float>();
         private static readonly List<ZDOID> pruneScratch = new List<ZDOID>();
+        private static readonly List<Container> viewScratch = new List<Container>();
 
-        // ZRoutedRpc is rebuilt with every session, and registering twice on the same one throws.
-        private static ZRoutedRpc registeredOn;
         private static float nextTick;
 
-        internal static void RegisterRpc() {
-            ZRoutedRpc rpc = ZRoutedRpc.instance;
-            if (rpc == null || rpc == registeredOn) { return; }
+        internal static void RegisterRpc(ZRoutedRpc rpc) {
             rpc.Register<ZDOID, long>(RequestRpc, RPC_RequestStorage);
-            registeredOn = rpc;
             heldUntil.Clear();
             lastRequest.Clear();
             wantedSince.Clear();
+        }
+
+        // ---- whether a container may change hands --------------------------------
+
+        /// <summary>
+        /// True when a chest must not change hands because someone has it open. Taking ownership out from
+        /// under them blanks their container panel, and their <c>m_inUse</c> can then never clear, because
+        /// <c>Container.SetInUse</c> is itself owner-gated - and a stuck <c>m_inUse</c> blocks
+        /// <c>Container.Load</c>, so their copy of the chest stops updating for good. <c>IsInUse()</c> only
+        /// reports the *local* field, so a remote player's session is visible only through the flag the
+        /// owner mirrors into the ZDO. The owner also refuses to hand over a chest that is open, so this is
+        /// the requester not bothering to ask.
+        ///
+        /// A boat's hold or a cart's bed is also busy while someone else is aboard, pulling or riding it:
+        /// the hold shares the vehicle's ZDO, so taking it takes the whole vehicle (see
+        /// <see cref="VehicleStorage.InUse"/>).
+        ///
+        /// The Hopper and Epic Loot's table leave a busy chest alone altogether. Crafting and building do
+        /// not: they count its stock, and have its owner take the materials out for them (see
+        /// <see cref="StorageReserve"/>). Auto-store likewise sends a chest that is open in someone
+        /// else's panel its items through the owner.
+        /// </summary>
+        internal static bool IsBusy(Container container) {
+            if (container.IsInUse()) { return true; }
+            ZNetView nview = container.m_nview;
+            if (nview == null || !nview.IsValid()) { return true; }
+            if (nview.GetZDO().GetInt(ZDOVars.s_inUse) == 1) { return true; }
+            return VehicleStorage.InUse(container);
         }
 
         // ---- writing ------------------------------------------------------------
@@ -76,7 +100,7 @@ namespace DvergerAutomation {
         /// Otherwise the container is asked for and false comes back - the caller skips it this time.
         /// </summary>
         internal static bool TryAcquire(Container container) {
-            if (!IsLive(container) || CraftFromStoragePatches.IsBusy(container)) { return false; }
+            if (!IsLive(container) || IsBusy(container)) { return false; }
             Hold(container);
             if (!container.m_nview.IsOwner()) {
                 Request(container);
@@ -108,7 +132,7 @@ namespace DvergerAutomation {
 
         /// <summary>Owned here and not open: can be spent from without asking anyone.</summary>
         internal static bool IsSpendable(Container container) {
-            return IsLive(container) && container.m_nview.IsOwner() && !CraftFromStoragePatches.IsBusy(container);
+            return IsLive(container) && container.m_nview.IsOwner() && !IsBusy(container);
         }
 
         /// <summary>
@@ -122,12 +146,11 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// Whether a chest someone else owns is worth asking for whole. Not when it is open, is a
-        /// vehicle in use (see <see cref="CraftFromStoragePatches.IsBusy"/>) or is a Hopper's store: its
-        /// owner would refuse.
+        /// Whether a chest someone else owns is worth asking for whole. Not when it is open, is a vehicle
+        /// in use or is a machine's store: its owner would refuse.
         /// </summary>
         internal static bool CanAskHandover(Container container) {
-            return IsLive(container) && !CraftFromStoragePatches.IsBusy(container) && !HopperNetwork.IsStore(container);
+            return IsLive(container) && !IsBusy(container) && !StorageRegistry.IsMachineStore(container);
         }
 
         /// <summary>
@@ -142,7 +165,7 @@ namespace DvergerAutomation {
                 Sync(container);
                 return true;
             }
-            if (!CraftFromStoragePatches.IsBusy(container)) {
+            if (!IsBusy(container)) {
                 Hold(container);
                 Request(container);
             }
@@ -155,7 +178,7 @@ namespace DvergerAutomation {
         /// it, and saving that would roll the previous owner's work back. A no-op when nothing changed.
         /// </summary>
         internal static void Sync(Container container) {
-            if (container.Load()) { ContainerNetwork.InvalidateItemCounts(); }
+            if (container != null && container.Load()) { ContainerNetwork.InvalidateItemCounts(); }
         }
 
         // ---- wanting --------------------------------------------------------------
@@ -165,7 +188,7 @@ namespace DvergerAutomation {
         /// them to hand it over. Cheap to call repeatedly: requests are rate-limited per container.
         /// </summary>
         internal static void Want(Container container) {
-            if (!IsLive(container) || CraftFromStoragePatches.IsBusy(container)) { return; }
+            if (!IsLive(container) || IsBusy(container)) { return; }
             Hold(container);
             if (!container.m_nview.IsOwner()) { Request(container); }
         }
@@ -179,13 +202,8 @@ namespace DvergerAutomation {
             int covered = 0;
             foreach (Container container in pool) {
                 if (covered >= amount) { return; }
-                if (container == null || CraftFromStoragePatches.IsBusy(container)) { continue; }
-                Inventory inv = container.GetInventory();
-                if (inv == null) { continue; }
-                int held = 0;
-                foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
-                    if (CraftFromStoragePatches.Matches(item, name, quality)) { held += item.m_stack; }
-                }
+                if (container == null || IsBusy(container)) { continue; }
+                int held = InventoryOps.CountMatching(container.GetInventory(), name, quality);
                 if (held <= 0) { continue; }
                 Want(container);
                 covered += held;
@@ -196,18 +214,10 @@ namespace DvergerAutomation {
         /// Checks, before anything is spent, that every material the storage pool has to supply can be
         /// spent on the spot: it is in containers this client owns, or has already been fetched from
         /// another player's. When the pool as a whole has enough but some of it is still elsewhere, it is
-        /// sent for (see <see cref="StorageReserve.Ensure"/>) and true comes back: the action has to wait.
-        /// False when it can go ahead - or when the pool is short anyway, which vanilla reports itself.
-        /// </summary>
-        internal static bool MustWait(Player player, List<Container> pool, Piece.Requirement[] requirements, CraftingStation station, int qualityLevel, int multiplier) {
-            return CheckStorage(player, pool, requirements, station, qualityLevel, multiplier) == StorageReserve.Readiness.Pending;
-        }
-
-        /// <summary>
-        /// <see cref="MustWait"/> with the third answer kept apart: the pool cannot cover the action at
-        /// all. Crafting can leave that to vanilla, which checks its requirements again after the gate.
-        /// Building cannot - its check comes before the gate, on counts that a reload inside this call
-        /// may have just corrected downwards.
+        /// sent for (see <see cref="StorageReserve.Ensure"/>) and <see cref="StorageReserve.Readiness.Pending"/>
+        /// comes back: the action has to wait. Crafting can leave <see cref="StorageReserve.Readiness.Short"/>
+        /// to vanilla, which checks its requirements again after the gate. Building cannot - its check comes
+        /// before the gate, on counts that a reload inside this call may have just corrected downwards.
         /// </summary>
         internal static StorageReserve.Readiness CheckStorage(Player player, List<Container> pool, Piece.Requirement[] requirements, CraftingStation station, int qualityLevel, int multiplier) {
             if (pool == null || pool.Count == 0) { return StorageReserve.Readiness.Covered; }
@@ -263,7 +273,7 @@ namespace DvergerAutomation {
             }
         }
 
-        internal static bool IsHeld(Container container) {
+        private static bool IsHeld(Container container) {
             if (!IsLive(container)) { return false; }
             return heldUntil.TryGetValue(container.m_nview.GetZDO().m_uid, out float until) && until > Time.time;
         }
@@ -289,7 +299,7 @@ namespace DvergerAutomation {
 
         private static void Request(Container container) {
             // Never handed over (see the class summary), so there is nothing to ask for.
-            if (HopperNetwork.IsStore(container)) { return; }
+            if (StorageRegistry.IsMachineStore(container)) { return; }
             ZDO zdo = container.m_nview.GetZDO();
             float now = Time.time;
             if (lastRequest.TryGetValue(zdo.m_uid, out float last) && now - last < RequestInterval) { return; }
@@ -303,7 +313,7 @@ namespace DvergerAutomation {
                 return;
             }
             if (ZRoutedRpc.instance == null) { return; }
-            ZRoutedRpc.instance.InvokeRoutedRPC(owner, RequestRpc, zdo.m_uid, AutomationHub.LocalPlayerId());
+            ZRoutedRpc.instance.InvokeRoutedRPC(owner, RequestRpc, zdo.m_uid, StorageScan.LocalPlayerId());
         }
 
         private static bool IsLive(Container container) {
@@ -364,65 +374,25 @@ namespace DvergerAutomation {
         }
 
         private static bool CanHandOver(GameObject root, long playerId) {
-            if (!TryResolveStorage(root, playerId, out _)) { return false; }
+            if (!StorageScan.TryResolveStorage(root, playerId, out _)) { return false; }
 
             ZNetView nview = root.GetComponent<ZNetView>();
-            foreach (Container container in root.GetComponentsInChildren<Container>(includeInactive: true)) {
+            bool keep = false;
+            root.GetComponentsInChildren(true, viewScratch);
+            foreach (Container container in viewScratch) {
                 if (container.m_nview != nview) { continue; }
-                if (CraftFromStoragePatches.IsBusy(container) || IsHeld(container)) { return false; }
-                if (HopperNetwork.IsStore(container)) { return false; }
+                if (IsBusy(container) || IsHeld(container) || StorageRegistry.IsMachineStore(container)) {
+                    keep = true;
+                    break;
+                }
             }
+            viewScratch.Clear();
+            if (keep) { return false; }
 
             // A hold or cart bed shares the vehicle's ZDO, so this would hand over the vehicle itself.
-            Ship ship = root.GetComponent<Ship>();
-            Vagon cart = root.GetComponent<Vagon>();
-            if (ship != null && ship.HasPlayerOnboard()) { return false; }
-            if (cart != null && (cart.IsAttached() || (cart.m_chair != null && cart.m_chair.IsInUse()))) { return false; }
-            return true;
-        }
-
-        /// <summary>
-        /// Finds the storage on a networked object, for a request made on behalf of
-        /// <paramref name="playerId"/>. Only the kinds of storage the pools hold: storage pieces (chests,
-        /// the Hopper's store), boat holds and cart beds. Never a creature carrying a container, and never
-        /// an AutoSorter, whose box is its user's alone. False too when the player could not open it.
-        /// </summary>
-        internal static bool TryResolveStorage(GameObject root, long playerId, out Container storage) {
-            storage = null;
-            if (root.GetComponent<Ship>() == null && root.GetComponent<Vagon>() == null && root.GetComponent<Piece>() == null) { return false; }
-            if (root.GetComponent<AutomationHub>() != null) { return false; }
-
-            ZNetView nview = root.GetComponent<ZNetView>();
-            foreach (Container container in root.GetComponentsInChildren<Container>(includeInactive: true)) {
-                if (container.m_nview != nview) { continue; }
-                // Vanilla's open request checks the same thing: a private chest goes only to its builder.
-                if (!container.CheckAccess(playerId)) { return false; }
-                if (storage == null) { storage = container; }
-            }
-            return storage != null;
-        }
-
-        /// <summary>The storage with this ZDO, when it is loaded here and the local player could open it.</summary>
-        internal static Container FindStorage(ZDOID id) {
-            if (ZNetScene.instance == null) { return null; }
-            GameObject root = ZNetScene.instance.FindInstance(id);
-            if (root == null) { return null; }
-            return TryResolveStorage(root, AutomationHub.LocalPlayerId(), out Container storage) ? storage : null;
-        }
-    }
-
-    [HarmonyPatch(typeof(Game), "Start")]
-    internal static class Game_Start_StorageOwnership_Patch {
-        private static void Postfix() {
-            StorageOwnership.RegisterRpc();
-            StorageOps.Register();
-            SharedChestOps.Register();
-            GrinderOps.Register();
-            HopperNetwork.RegisterRpc();
-            LighterNetwork.RegisterRpc();
-            StorageRpc.RegisterRpc();
-            StorageReserve.Reset();
-            SharedChestRequests.Reset();
+            MonoBehaviour carrier = root.GetComponent<Ship>();
+            if (carrier == null) { carrier = root.GetComponent<Vagon>(); }
+            return carrier == null || !VehicleStorage.CarrierInUse(carrier);
         }
     }
 

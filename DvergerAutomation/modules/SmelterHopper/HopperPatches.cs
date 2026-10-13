@@ -45,15 +45,15 @@ namespace DvergerAutomation {
     }
 
     /// <summary>
-    /// Counts stations as they load, so a hopper knows when one may have appeared in its range. A
-    /// placement ghost has no ZDO and is left out.
+    /// Registers stations as they load, so a hopper finds the ones in its range without overlapping the
+    /// whole base, and knows when one may have appeared there. The Lighter's registry hears of them here
+    /// too: the hot tub is a Smelter. Both leave placement ghosts out.
     /// </summary>
     [HarmonyPatch(typeof(Smelter), "Awake")]
     internal static class Smelter_Awake_Patch {
         private static void Postfix(Smelter __instance) {
-            if (__instance.m_nview != null && __instance.m_nview.GetZDO() != null) {
-                HopperNetwork.NoteStationLoaded();
-            }
+            HopperNetwork.StationLoaded(__instance);
+            FuelBurners.Register(__instance);
         }
     }
 }

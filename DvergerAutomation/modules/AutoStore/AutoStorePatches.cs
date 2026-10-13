@@ -15,17 +15,11 @@ namespace DvergerAutomation {
             Container container = gui.m_currentContainer;
             if (container == null) { return; }
 
-            AutomationHub hub = container.GetComponentInParent<AutomationHub>();
             // Any other chest, including a different sorter's box, is none of our business.
-            if (hub == null || hub.DepositBox != container) { return; }
+            if (!AutoStore.IsDepositBox(container)) { return; }
 
             try {
-                // Off, or a dormant hub - Scan() deliberately links nothing, so sorting would just hand
-                // everything straight back. Either way the box sits there as a plain chest.
-                bool dormant = ValConfig.RequireCores.Value && hub.CoreCount == 0;
-                if (ValConfig.AutoStoreEnabled.Value && !dormant) {
-                    AutoStore.Sort(hub, Player.m_localPlayer);
-                }
+                AutoStore.SortBox(container, Player.m_localPlayer, report: true);
             } catch (System.Exception ex) {
                 // This runs inside InventoryGui.Hide; letting it escape would abort the close and leave
                 // the player staring at a half-shut inventory.
@@ -78,8 +72,10 @@ namespace DvergerAutomation {
             inv.m_width = AutoStore.MaxWidth;
         }
 
+        // A width of 0 is never a box's: it is what the state reads when the prefix above did not run -
+        // StorageRegistry's skips a reload that would bring nothing new - and there is nothing to put back.
         private static void Postfix(Container __instance, bool __result, int __state) {
-            if (__state < 0) { return; }
+            if (__state <= 0) { return; }
             if (__result) {
                 AutoStore.ApplySize(__instance);
             } else {

@@ -55,7 +55,7 @@ namespace DvergerAutomation {
                     if (pending.Destination == SharedChestRequests.Destination.Slot) {
                         Arrive(copy, pending.Item, pending.OtherSlot);
                     } else if (pending.Destination == SharedChestRequests.Destination.Any) {
-                        AutoStore.AddMeasured(copy, pending.Item, pending.Item.m_stack);
+                        InventoryOps.AddMeasured(copy, pending.Item, pending.Item.m_stack);
                     }
                 } else if (pending.Kind == SharedChestRequests.Kind.Add && pending.Swap != null) {
                     Arrive(copy, pending.Swap, pending.OtherSlot);
@@ -83,7 +83,7 @@ namespace DvergerAutomation {
             if (left <= 0) { return; }
             ItemDrop.ItemData rest = item.Clone();
             rest.m_stack = left;
-            AutoStore.AddMeasured(copy, rest, left);
+            InventoryOps.AddMeasured(copy, rest, left);
         }
 
         private static Inventory Copy(Inventory inventory) {

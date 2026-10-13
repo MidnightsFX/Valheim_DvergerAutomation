@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 
 namespace DvergerAutomation {
@@ -20,7 +22,8 @@ namespace DvergerAutomation {
     internal static class SharedChestGuard {
         /// <summary>
         /// Whether an add must be refused: it targets the guest's copy, or it would put one of that
-        /// copy's own items somewhere else - the first half of taking it out.
+        /// copy's own items somewhere else - the first half of taking it out. Asked of every add anywhere
+        /// in the game, so the cheap questions go first.
         /// </summary>
         internal static bool BlocksAdd(Inventory target, ItemDrop.ItemData item) {
             InventoryGui gui = InventoryGui.m_instance;
@@ -28,10 +31,10 @@ namespace DvergerAutomation {
             Container chest = gui.m_currentContainer;
             if ((object)chest == null) { return false; }
             Inventory open = chest.m_inventory;
-            if (open == null) { return false; }
+            if (open == null || SharedChests.GuestContainer() != chest) { return false; }
 
-            if (target == open) { return !chest.m_loading && SharedChests.GuestContainer() == chest; }
-            return item != null && open.m_inventory.Contains(item) && SharedChests.GuestContainer() == chest;
+            if (target == open) { return !chest.m_loading; }
+            return item != null && open.m_inventory.Contains(item);
         }
 
         internal static bool BlocksRemove(Inventory target) {
@@ -42,28 +45,14 @@ namespace DvergerAutomation {
     // ---- adds: the three that take an item instance. Every other AddItem overload ends in one of these.
 
     [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.AddItem), new[] { typeof(ItemDrop.ItemData), typeof(int), typeof(int), typeof(int), typeof(bool) })]
-    internal static class Inventory_AddItemAt_SharedChestGuard_Patch {
-        private static bool Prefix(Inventory __instance, ItemDrop.ItemData item, ref bool __result) {
-            if (!SharedChestGuard.BlocksAdd(__instance, item)) { return true; }
-            __result = false;
-            return false;
-        }
-    }
-
-    [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.AddItem), new[] { typeof(ItemDrop.ItemData) })]
+    [HarmonyPatch]
     internal static class Inventory_AddItem_SharedChestGuard_Patch {
-        private static bool Prefix(Inventory __instance, ItemDrop.ItemData item, ref bool __result) {
-            if (!SharedChestGuard.BlocksAdd(__instance, item)) { return true; }
-            __result = false;
-            return false;
+        private static IEnumerable<MethodBase> TargetMethods() {
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.AddItem), new[] { typeof(ItemDrop.ItemData), typeof(int), typeof(int), typeof(int), typeof(bool) });
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.AddItem), new[] { typeof(ItemDrop.ItemData) });
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.AddItem), new[] { typeof(ItemDrop.ItemData), typeof(Vector2i) });
         }
-    }
 
-    [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.AddItem), new[] { typeof(ItemDrop.ItemData), typeof(Vector2i) })]
-    internal static class Inventory_AddItemPos_SharedChestGuard_Patch {
         private static bool Prefix(Inventory __instance, ItemDrop.ItemData item, ref bool __result) {
             if (!SharedChestGuard.BlocksAdd(__instance, item)) { return true; }
             __result = false;
@@ -74,8 +63,15 @@ namespace DvergerAutomation {
     // ---- removes ------------------------------------------------------------------
 
     [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(int) })]
-    internal static class Inventory_RemoveItemIndex_SharedChestGuard_Patch {
+    [HarmonyPatch]
+    internal static class Inventory_Remove_SharedChestGuard_Patch {
+        private static IEnumerable<MethodBase> TargetMethods() {
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(int) });
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.RemoveOneItem));
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(ItemDrop.ItemData) });
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(ItemDrop.ItemData), typeof(int) });
+        }
+
         private static bool Prefix(Inventory __instance, ref bool __result) {
             if (!SharedChestGuard.BlocksRemove(__instance)) { return true; }
             __result = false;
@@ -83,47 +79,15 @@ namespace DvergerAutomation {
         }
     }
 
+    // The two that return nothing.
     [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.RemoveOneItem))]
-    internal static class Inventory_RemoveOneItem_SharedChestGuard_Patch {
-        private static bool Prefix(Inventory __instance, ref bool __result) {
-            if (!SharedChestGuard.BlocksRemove(__instance)) { return true; }
-            __result = false;
-            return false;
+    [HarmonyPatch]
+    internal static class Inventory_RemoveVoid_SharedChestGuard_Patch {
+        private static IEnumerable<MethodBase> TargetMethods() {
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(string), typeof(int), typeof(int), typeof(bool) });
+            yield return AccessTools.Method(typeof(Inventory), nameof(Inventory.RemoveAll));
         }
-    }
 
-    [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(ItemDrop.ItemData) })]
-    internal static class Inventory_RemoveItem_SharedChestGuard_Patch {
-        private static bool Prefix(Inventory __instance, ref bool __result) {
-            if (!SharedChestGuard.BlocksRemove(__instance)) { return true; }
-            __result = false;
-            return false;
-        }
-    }
-
-    [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(ItemDrop.ItemData), typeof(int) })]
-    internal static class Inventory_RemoveItemAmount_SharedChestGuard_Patch {
-        private static bool Prefix(Inventory __instance, ref bool __result) {
-            if (!SharedChestGuard.BlocksRemove(__instance)) { return true; }
-            __result = false;
-            return false;
-        }
-    }
-
-    [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.RemoveItem), new[] { typeof(string), typeof(int), typeof(int), typeof(bool) })]
-    internal static class Inventory_RemoveItemName_SharedChestGuard_Patch {
-        private static bool Prefix(Inventory __instance) {
-            return !SharedChestGuard.BlocksRemove(__instance);
-        }
-    }
-
-    [SharedChestPatch]
-    [HarmonyPatch(typeof(Inventory), nameof(Inventory.RemoveAll))]
-    internal static class Inventory_RemoveAll_SharedChestGuard_Patch {
         private static bool Prefix(Inventory __instance) {
             return !SharedChestGuard.BlocksRemove(__instance);
         }

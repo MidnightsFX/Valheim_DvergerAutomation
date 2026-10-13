@@ -44,8 +44,8 @@ namespace DvergerAutomation {
             internal Destination Destination;
             /// <summary>Who asked. A player who has died and come back since has a different inventory to deliver to.</summary>
             internal Player Requester;
-            /// <summary>The revision the guest's copy of the chest was at when this was sent.</summary>
-            internal uint RevisionAtSend;
+            /// <summary>The version the guest's copy of the chest was at when this was sent (see <see cref="StorageRegistry.Version"/>).</summary>
+            internal int VersionAtSend;
             internal bool Answered;
             internal float AnsweredAt;
 
@@ -67,26 +67,18 @@ namespace DvergerAutomation {
         private const float ResendSeconds = 2f;
         private const int MaxResends = 2;
 
-        private static readonly Vector2i Anywhere = new Vector2i(-1, -1);
+        /// <summary>A slot that is no slot: anywhere there is room.</summary>
+        internal static readonly Vector2i Anywhere = new Vector2i(-1, -1);
 
         internal static readonly List<Pending> All = new List<Pending>();
         private static readonly List<Pending> Scratch = new List<Pending>();
-
-        // Items that came back while there was no player to give them to.
-        private static readonly List<ItemDrop.ItemData> Orphans = new List<ItemDrop.ItemData>();
-
-        // The crafting panel needs redrawing after the pack changes, which rebuilds its whole recipe
-        // list. Take All brings one answer per stack, so it is done once a frame, not once an answer.
-        private static bool panelStale;
 
         /// <summary>A unit of food or mead is on its way out of a chest to be consumed; one at a time.</summary>
         internal static bool ConsumePending { get; private set; }
 
         internal static void Reset() {
             All.Clear();
-            Orphans.Clear();
             ConsumePending = false;
-            panelStale = false;
         }
 
         // ---- asking -----------------------------------------------------------------
@@ -124,7 +116,7 @@ namespace DvergerAutomation {
                 }
             } else {
                 to = Anywhere;
-                amount = AutoStore.AddMeasured(predicted, sent, amount);
+                amount = InventoryOps.AddMeasured(predicted, sent, amount);
             }
             if (amount <= 0) { return 0; }
             sent.m_stack = amount;
@@ -139,7 +131,7 @@ namespace DvergerAutomation {
                 WholeStack = wholeStack,
                 Swap = expectedBack,
                 Requester = Player.m_localPlayer,
-                RevisionAtSend = chest.m_lastRevision,
+                VersionAtSend = StorageRegistry.Version(chest),
             };
             int expect = SharedChestOps.Fingerprint(inSlot);
             All.Add(pending);
@@ -179,7 +171,7 @@ namespace DvergerAutomation {
                 Swap = swapSent,
                 Destination = destination,
                 Requester = Player.m_localPlayer,
-                RevisionAtSend = chest.m_lastRevision,
+                VersionAtSend = StorageRegistry.Version(chest),
             };
             Vector2i from = item.m_gridPos;
             int expect = SharedChestOps.Fingerprint(item);
@@ -217,7 +209,7 @@ namespace DvergerAutomation {
                 OtherSlot = to,
                 WholeStack = wholeStack,
                 Requester = Player.m_localPlayer,
-                RevisionAtSend = chest.m_lastRevision,
+                VersionAtSend = StorageRegistry.Version(chest),
             };
             int expectFrom = SharedChestOps.Fingerprint(item);
             int expectTo = SharedChestOps.Fingerprint(inSlot);
@@ -294,7 +286,7 @@ namespace DvergerAutomation {
                     DeliverHome(pending, got, toSlot: false);
                     break;
                 case Destination.Ground:
-                    DropAtFeet(got);
+                    PlayerDelivery.DropAtFeet(got);
                     break;
                 case Destination.Consume:
                     Consume(got);
@@ -327,7 +319,7 @@ namespace DvergerAutomation {
             // drawing the request on top would show it twice.
             Container chest = pending.Chest;
             bool settled = !succeeded || chest == null || chest.m_nview == null || !chest.m_nview.IsValid()
-                || chest.m_nview.IsOwner() || chest.m_lastRevision != pending.RevisionAtSend;
+                || chest.m_nview.IsOwner() || StorageRegistry.Version(chest) != pending.VersionAtSend;
             if (settled) { All.Remove(pending); }
             RefreshPanel();
         }
@@ -347,21 +339,12 @@ namespace DvergerAutomation {
         }
 
         internal static void Tick() {
-            if (All.Count > 0) {
-                float now = Time.time;
-                All.RemoveAll(pending => pending.Answered && now - pending.AnsweredAt > SettleSeconds);
-                Resend(now);
+            if (All.Count == 0) { return; }
+            float now = Time.time;
+            for (int i = All.Count - 1; i >= 0; --i) {
+                if (All[i].Answered && now - All[i].AnsweredAt > SettleSeconds) { All.RemoveAt(i); }
             }
-            if (Orphans.Count > 0 && Player.m_localPlayer != null) {
-                List<ItemDrop.ItemData> waiting = new List<ItemDrop.ItemData>(Orphans);
-                Orphans.Clear();
-                foreach (ItemDrop.ItemData item in waiting) { Deliver(item, null, Anywhere); }
-            }
-            if (panelStale) {
-                panelStale = false;
-                InventoryGui gui = InventoryGui.m_instance;
-                if (gui != null && Player.m_localPlayer != null) { gui.UpdateCraftingPanel(); }
-            }
+            Resend(now);
         }
 
         // Sending again can settle a request on the spot - this client may be the new owner - which edits
@@ -399,58 +382,24 @@ namespace DvergerAutomation {
 
         /// <summary>
         /// Gives the player an item: into <paramref name="slot"/> of <paramref name="preferred"/> if it
-        /// fits there, then anywhere in it, then anywhere in their pack, then the ground.
+        /// fits there, then on through <see cref="PlayerDelivery"/> - anywhere in it, their pack, the ground.
         /// </summary>
         private static void Deliver(ItemDrop.ItemData item, Inventory preferred, Vector2i slot) {
             Player player = Player.m_localPlayer;
-            if (player == null) {
-                Orphans.Add(item);
-                return;
-            }
-
-            Inventory pack = player.GetInventory();
-            Inventory first = preferred ?? pack;
-            int left = item.m_stack;
-            if (slot.x >= 0 && slot.y >= 0) {
+            if (player != null && slot.x >= 0 && slot.y >= 0) {
+                Inventory first = preferred ?? player.GetInventory();
                 ItemDrop.ItemData copy = item.Clone();
-                copy.m_stack = left;
                 int landed = SharedChestOps.ApplyAdd(first, copy, slot, wholeStack: false, live: true, out _);
                 // Topping up a stack edits it in place, which tells nobody: not the weight, not the hotbar.
                 if (landed > 0) { first.Changed(); }
-                left -= landed;
+                if (landed >= item.m_stack) {
+                    PlayerDelivery.PackChanged();
+                    return;
+                }
+                item = item.Clone();
+                item.m_stack -= landed;
             }
-            if (left > 0) { left -= AddAnywhere(first, item, left); }
-            if (left > 0 && first != pack) { left -= AddAnywhere(pack, item, left); }
-            if (left > 0) { DropAtFeet(player, item, left); }
-            RefreshPanel();
-        }
-
-        private static int AddAnywhere(Inventory inv, ItemDrop.ItemData item, int amount) {
-            ItemDrop.ItemData copy = item.Clone();
-            copy.m_stack = amount;
-            return AutoStore.AddMeasured(inv, copy, amount);
-        }
-
-        private static void DropAtFeet(ItemDrop.ItemData item) {
-            Player player = Player.m_localPlayer;
-            if (player == null) {
-                Orphans.Add(item);
-                return;
-            }
-            DropAtFeet(player, item, item.m_stack);
-        }
-
-        // The tail of vanilla's Humanoid.DropItem, from the point where the item has left its inventory.
-        private static void DropAtFeet(Player player, ItemDrop.ItemData item, int amount) {
-            if (amount <= 0 || item.m_dropPrefab == null) { return; }
-            Transform at = player.transform;
-            ItemDrop drop = ItemDrop.DropItem(item, amount, at.position + at.forward + at.up, at.rotation);
-            drop.OnPlayerDrop();
-            Rigidbody body = drop.GetComponent<Rigidbody>();
-            if (body != null) { body.linearVelocity = (at.forward + Vector3.up) * (item.GetWeight() >= 300f ? 0.5f : 5f); }
-            player.m_zanim.SetTrigger("interact");
-            player.m_dropEffects.Create(at.position, Quaternion.identity, null, 1f, -1, player.GetZDOID());
-            player.Message(MessageHud.MessageType.TopLeft, "$msg_dropped " + drop.m_itemData.m_shared.m_name, drop.m_itemData.m_stack, drop.m_itemData.GetIcon());
+            PlayerDelivery.Give(item, preferred);
         }
 
         // Eaten through vanilla's own path, out of a one-slot inventory holding just the unit that
@@ -459,7 +408,7 @@ namespace DvergerAutomation {
         private static void Consume(ItemDrop.ItemData item) {
             Player player = Player.m_localPlayer;
             if (player == null) {
-                Orphans.Add(item);
+                PlayerDelivery.Give(item);
                 return;
             }
             Inventory scratch = new Inventory("da", null, 1, 1);
@@ -471,9 +420,9 @@ namespace DvergerAutomation {
             }
         }
 
-        // The crafting panel counts what the player carries. Redrawn from Tick.
+        // The crafting panel counts what the player carries.
         private static void RefreshPanel() {
-            panelStale = true;
+            PlayerDelivery.PackChanged();
         }
     }
 }

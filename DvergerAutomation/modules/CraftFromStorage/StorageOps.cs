@@ -15,9 +15,8 @@ namespace DvergerAutomation {
             StorageRpc.Register(StorageRpc.Op.TakeExact, TakeExact);
         }
 
-        internal static void WriteTake(ZPackage args, string name, int quality, int amount) {
+        internal static void WriteTake(ZPackage args, string name, int amount) {
             args.Write(name);
-            args.Write(quality);
             args.Write(amount);
         }
 
@@ -26,34 +25,16 @@ namespace DvergerAutomation {
         /// by-instance walk as <see cref="CraftFromStoragePatches.RemoveFromContainers"/>, so what another
         /// player can be sent is exactly what this client could have spent itself.
         /// </summary>
-        private static StorageRpc.Status Take(Container container, long sender, ZPackage args, ZPackage reply) {
+        private static StorageRpc.Status Take(Container container, ZPackage args, ZPackage reply) {
             string name = args.ReadString();
-            int quality = args.ReadInt();
             int amount = args.ReadInt();
 
             StorageOwnership.Sync(container);
             Inventory inv = container.GetInventory();
             List<ItemDrop.ItemData> taken = new List<ItemDrop.ItemData>();
-            int remaining = amount;
+            int removed;
             try {
-                if (inv != null) {
-                    // GetAllItems hands back the live backing list and emptied stacks drop out of it, so
-                    // walk it backwards.
-                    List<ItemDrop.ItemData> items = inv.GetAllItems();
-                    for (int i = items.Count - 1; i >= 0 && remaining > 0 && taken.Count < ItemCodec.MaxItems; --i) {
-                        ItemDrop.ItemData item = items[i];
-                        if (!CraftFromStoragePatches.Matches(item, name, quality)) { continue; }
-                        // Cannot be rebuilt on the other side, so it would leave here and arrive nowhere.
-                        if (item.m_dropPrefab == null) { continue; }
-
-                        int take = Mathf.Min(item.m_stack, remaining);
-                        ItemDrop.ItemData slice = item.Clone();
-                        slice.m_stack = take;
-                        taken.Add(slice);
-                        inv.RemoveItem(item, take);
-                        remaining -= take;
-                    }
-                }
+                removed = InventoryOps.Take(inv, name, -1, amount, taken);
                 ItemCodec.Write(reply, taken);
             } catch (Exception) {
                 // The reply is the only copy of what was taken, and it is not going out: anything listening
@@ -64,7 +45,7 @@ namespace DvergerAutomation {
             }
 
             if (taken.Count > 0) { AfterChange(container); }
-            return remaining <= 0 ? StorageRpc.Status.Ok : StorageRpc.Status.Partial;
+            return removed >= amount ? StorageRpc.Status.Ok : StorageRpc.Status.Partial;
         }
 
         /// <summary>
@@ -91,7 +72,7 @@ namespace DvergerAutomation {
         /// moved it. Nothing matching at all is <see cref="StorageRpc.Status.Changed"/>: someone got there
         /// first.
         /// </summary>
-        private static StorageRpc.Status TakeExact(Container container, long sender, ZPackage args, ZPackage reply) {
+        private static StorageRpc.Status TakeExact(Container container, ZPackage args, ZPackage reply) {
             List<ItemDrop.ItemData> prototypes = ItemCodec.Read(args, out bool intact);
             Vector2i hint = new Vector2i(args.ReadInt(), args.ReadInt());
             int amount = args.ReadInt();
@@ -129,7 +110,7 @@ namespace DvergerAutomation {
         private static int TakeMatching(Inventory inv, ItemDrop.ItemData item, ItemDrop.ItemData prototype, int remaining, List<ItemDrop.ItemData> taken) {
             if (remaining <= 0 || !ItemIdentity.Interchangeable(prototype, item)) { return 0; }
             // Cannot be rebuilt on the other side, so it would leave here and arrive nowhere.
-            if (item.m_dropPrefab == null) { return 0; }
+            if (!ItemIdentity.CanTravel(item)) { return 0; }
 
             int take = Mathf.Min(item.m_stack, remaining);
             ItemDrop.ItemData slice = item.Clone();
@@ -145,7 +126,7 @@ namespace DvergerAutomation {
             if (inv == null) { return; }
             foreach (ItemDrop.ItemData item in taken) {
                 try {
-                    AutoStore.AddMeasured(inv, item, item.m_stack);
+                    InventoryOps.AddMeasured(inv, item, item.m_stack);
                 } catch (Exception ex) {
                     Logger.LogError($"[Storage] could not put {item.m_stack} {item.m_shared.m_name} back after a failed request: {ex}");
                 }
@@ -168,7 +149,7 @@ namespace DvergerAutomation {
         /// sent. Nothing is added when the items did not all arrive whole: the amounts would no longer line
         /// up with what the sender kept, and it restores from that instead.
         /// </summary>
-        private static StorageRpc.Status Give(Container container, long sender, ZPackage args, ZPackage reply) {
+        private static StorageRpc.Status Give(Container container, ZPackage args, ZPackage reply) {
             List<ItemDrop.ItemData> items = ItemCodec.Read(args, out bool intact);
             if (!intact) { return StorageRpc.Status.Error; }
 
@@ -178,7 +159,7 @@ namespace DvergerAutomation {
             int landedTotal = 0;
             reply.Write(items.Count);
             foreach (ItemDrop.ItemData item in items) {
-                int landed = inv != null ? AutoStore.AddMeasured(inv, item, item.m_stack) : 0;
+                int landed = inv != null ? InventoryOps.AddMeasured(inv, item, item.m_stack) : 0;
                 reply.Write(landed);
                 landedTotal += landed;
                 if (landed < item.m_stack) { all = false; }

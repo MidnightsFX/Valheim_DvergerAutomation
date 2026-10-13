@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using UnityEngine;
 
@@ -26,8 +27,6 @@ namespace DvergerAutomation {
     internal static class EpicLootIntegration {
         /// <summary>Epic Loot's BepInEx plugin GUID, used for the soft dependency that orders load.</summary>
         internal const string EpicLootGUID = "randyknapp.mods.epicloot";
-
-        private static readonly List<Container> Empty = new List<Container>();
 
         /// <summary>True once Epic Loot is present and the inventory provider is registered.</summary>
         internal static bool Active { get; private set; }
@@ -162,7 +161,41 @@ namespace DvergerAutomation {
         internal static bool IsMagicItem(ItemDrop.ItemData item) {
             if (item == null || item.m_shared == null) { return false; }
             if (item.m_shared.m_maxStackSize > 1) { return false; }
-            return EpicLootAPI.EpicLoot.IsMagicItem(item);
+            // Asked of every piece of gear in every linked chest whenever the crafting counts are rebuilt,
+            // and each answer is a reflection call, so it is kept with the item. Enchanting or disenchanting
+            // adds or removes Epic Loot's entry in the item's custom data, so a changed entry count is a
+            // changed answer.
+            int data = item.m_customData != null ? item.m_customData.Count : 0;
+            if (MagicMemos.TryGetValue(item, out MagicMemo memo) && memo.Data == data) { return memo.Magic; }
+            bool magic = EpicLootAPI.EpicLoot.IsMagicItem(item);
+            if (memo == null) {
+                memo = new MagicMemo();
+                MagicMemos.Add(item, memo);
+            }
+            memo.Data = data;
+            memo.Magic = magic;
+            return magic;
+        }
+
+        private sealed class MagicMemo {
+            internal int Data;
+            internal bool Magic;
+        }
+
+        // Weak, so an item that leaves the game takes its answer with it.
+        private static readonly ConditionalWeakTable<ItemDrop.ItemData, MagicMemo> MagicMemos = new ConditionalWeakTable<ItemDrop.ItemData, MagicMemo>();
+
+        /// <summary>
+        /// What enchanting this item to the rarity it has costs at Epic Loot's enchanting table, by material
+        /// prefab name: a runestone, dust, and essence or reagent with Epic Loot's own costs. Empty when the
+        /// item is not enchanted, or the installed Epic Loot cannot say. Not gated on <see cref="Active"/>,
+        /// for the same reason as <see cref="IsMagicItem"/>.
+        /// </summary>
+        internal static List<EpicLootAPI.ItemAmount> EnchantCost(ItemDrop.ItemData item) {
+            if (!IsMagicItem(item) || !EpicLootAPI.EpicLoot.TryGetRarity(item, out EpicLootAPI.ItemRarity rarity)) {
+                return new List<EpicLootAPI.ItemAmount>();
+            }
+            return EpicLootAPI.EpicLoot.GetEnchantCosts(item, rarity);
         }
 
         /// <summary>
@@ -185,15 +218,9 @@ namespace DvergerAutomation {
 
         // ---- provider callbacks -------------------------------------------------
 
-        // Same pool the crafting and building paths use: the station's chests when the player is at a
-        // station (Epic Loot's enchanting table is one), otherwise every hub whose radius covers them.
+        // Same pool the crafting and building paths use (see ContainerNetwork.PoolFor).
         private static List<Container> Pool() {
-            Player player = Player.m_localPlayer;
-            if (player == null) { return Empty; }
-            CraftingStation station = player.GetCurrentCraftingStation();
-            return station != null
-                ? ContainerNetwork.GetContainersForStation(station)
-                : ContainerNetwork.GetContainersNearPoint(player.transform.position);
+            return ContainerNetwork.PoolFor(Player.m_localPlayer);
         }
 
         // Live instances, deliberately including magic items: this list is what the table may act *on*,
@@ -245,7 +272,7 @@ namespace DvergerAutomation {
         private static int RemoveExactItem(ItemDrop.ItemData item, int amount) {
             if (item == null || amount <= 0) { return 0; }
             foreach (Container container in Pool()) {
-                if (container == null || CraftFromStoragePatches.IsBusy(container)) { continue; }
+                if (container == null || StorageOwnership.IsBusy(container)) { continue; }
                 Inventory inv = container.GetInventory();
                 if (inv == null || !inv.ContainsItem(item)) { continue; }
                 // Only its owner may write to it. Checked after finding the item, so only the chest that

@@ -1,5 +1,5 @@
 using System;
-using UnityEngine;
+using System.Collections.Generic;
 
 namespace DvergerAutomation {
     /// <summary>
@@ -34,21 +34,18 @@ namespace DvergerAutomation {
     ///    game's own inventory serialiser rather than field by field.
     /// </summary>
     internal static class SharedChests {
-        // MultiUserChest's opt-out flag, honoured here too so one marking keeps a container exclusive
-        // under either mod.
-        private static readonly int IgnoreHash = "MUC_Ignore".GetStableHashCode();
-
         // The part of IsShareable that depends only on how the piece is built, for the one container
         // that is asked about every frame while its panel is open.
         private static Container lastChecked;
         private static bool lastBuiltToShare;
+        private static readonly List<Container> ViewScratch = new List<Container>();
 
         /// <summary>On for everyone or no one: the setting is the server's, and MultiUserChest takes over when present.</summary>
         internal static bool Active => !MultiUserChestIntegration.Present && ValConfig.SharedChestsEnabled.Value;
 
         /// <summary>
-        /// Whether a container may have guests. Storage pieces, boat holds and cart beds; not the
-        /// AutoSorter's deposit box or the Hopper's store, which are worked by code that runs only for
+        /// Whether a container may have guests. Storage pieces, boat holds and cart beds; not an
+        /// AutoSorter's deposit box or a machine's store, which are worked by code that runs only for
         /// their owner; and not a networked object carrying more than one container, where a request
         /// could not say which it meant.
         /// </summary>
@@ -60,18 +57,18 @@ namespace DvergerAutomation {
                 lastChecked = container;
                 lastBuiltToShare = BuiltToShare(container, nview);
             }
-            return lastBuiltToShare && !nview.GetZDO().GetBool(IgnoreHash);
+            return lastBuiltToShare && !nview.GetZDO().GetBool(MultiUserChestIntegration.IgnoreHash);
         }
 
         private static bool BuiltToShare(Container container, ZNetView nview) {
-            GameObject root = nview.gameObject;
-            if (root.GetComponent<Piece>() == null && root.GetComponent<Ship>() == null && root.GetComponent<Vagon>() == null) { return false; }
-            if (container.GetComponentInParent<AutomationHub>() != null || container.GetComponentInParent<HopperHub>() != null
-                || container.GetComponentInParent<GrinderHub>() != null || container.GetComponentInParent<LighterHub>() != null) { return false; }
+            StorageRegistry.Kind kind = StorageRegistry.KindOf(container);
+            if (kind != StorageRegistry.Kind.Chest && kind != StorageRegistry.Kind.Vehicle) { return false; }
             int sharing = 0;
-            foreach (Container other in root.GetComponentsInChildren<Container>(includeInactive: true)) {
+            nview.GetComponentsInChildren(true, ViewScratch);
+            foreach (Container other in ViewScratch) {
                 if (other.m_nview == nview) { ++sharing; }
             }
+            ViewScratch.Clear();
             return sharing == 1;
         }
 

@@ -13,7 +13,6 @@ namespace DvergerAutomation {
     // to, how much, and to which slot.
 
     internal static class SharedChestIntents {
-        private static readonly Vector2i Anywhere = new Vector2i(-1, -1);
 
         /// <summary>
         /// A drop onto a grid slot: the end of every drag, split or not. True when the drag is finished
@@ -54,8 +53,8 @@ namespace DvergerAutomation {
                     SharedChestRequests.Remove(chest, item, item.m_stack, SharedChestRequests.Destination.Slot, to, pos, null);
                     continue;
                 }
-                int fits = AutoStore.AddMeasured(room, item, item.m_stack);
-                if (fits > 0) { SharedChestRequests.Remove(chest, item, fits, SharedChestRequests.Destination.Any, to, Anywhere, null); }
+                int fits = InventoryOps.AddMeasured(room, item, item.m_stack);
+                if (fits > 0) { SharedChestRequests.Remove(chest, item, fits, SharedChestRequests.Destination.Any, to, SharedChestRequests.Anywhere, null); }
             }
         }
 
@@ -71,7 +70,7 @@ namespace DvergerAutomation {
                 if (!SharedChestPreview.Chest(chest).ContainsItemByName(item.m_shared.m_name)) { continue; }
                 if (player != null && player.IsItemEquiped(item)) { continue; }
                 // Sends what fits and leaves the rest of the stack where it was.
-                sent += SharedChestRequests.Add(chest, from, item, item.m_stack, Anywhere);
+                sent += SharedChestRequests.Add(chest, from, item, item.m_stack, SharedChestRequests.Anywhere);
             }
 
             // The rest of what vanilla's StackAll does besides moving items.
@@ -105,13 +104,13 @@ namespace DvergerAutomation {
             if (chest == null || item == null) { return true; }
             Inventory replica = chest.m_inventory;
             if (__instance == replica && fromInventory != replica) {
-                SharedChestRequests.Add(chest, fromInventory, item, item.m_stack, new Vector2i(-1, -1));
+                SharedChestRequests.Add(chest, fromInventory, item, item.m_stack, SharedChestRequests.Anywhere);
                 return false;
             }
             if (fromInventory == replica && __instance != replica) {
-                int fits = AutoStore.AddMeasured(SharedChestPreview.Other(__instance), item, item.m_stack);
+                int fits = InventoryOps.AddMeasured(SharedChestPreview.Other(__instance), item, item.m_stack);
                 if (fits > 0) {
-                    SharedChestRequests.Remove(chest, item, fits, SharedChestRequests.Destination.Any, __instance, new Vector2i(-1, -1), null);
+                    SharedChestRequests.Remove(chest, item, fits, SharedChestRequests.Destination.Any, __instance, SharedChestRequests.Anywhere, null);
                 }
                 return false;
             }
@@ -178,7 +177,7 @@ namespace DvergerAutomation {
             // Vanilla refuses these with a message of its own, before it touches the inventory.
             if (amount == 0 || item.m_shared.m_questItem) { return true; }
 
-            __result = SharedChestRequests.Remove(chest, item, amount, SharedChestRequests.Destination.Ground, null, new Vector2i(-1, -1), null);
+            __result = SharedChestRequests.Remove(chest, item, amount, SharedChestRequests.Destination.Ground, null, SharedChestRequests.Anywhere, null);
             return false;
         }
     }
@@ -198,7 +197,7 @@ namespace DvergerAutomation {
             // Says why not, the same as trying to eat it would.
             if (!player.CanConsumeItem(item, checkWorldLevel: true)) { return false; }
 
-            SharedChestRequests.Remove(chest, item, 1, SharedChestRequests.Destination.Consume, null, new Vector2i(-1, -1), null);
+            SharedChestRequests.Remove(chest, item, 1, SharedChestRequests.Destination.Consume, null, SharedChestRequests.Anywhere, null);
             return false;
         }
     }

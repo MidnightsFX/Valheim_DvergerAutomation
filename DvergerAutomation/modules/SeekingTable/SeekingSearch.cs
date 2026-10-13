@@ -127,7 +127,6 @@ namespace DvergerAutomation {
         private static readonly Dictionary<string, MagicTexts> Magic = new Dictionary<string, MagicTexts>();
         private static readonly Dictionary<string, string> EffectNames = new Dictionary<string, string>();
         private static readonly StringBuilder KeyBuilder = new StringBuilder();
-        private static readonly List<string> KeyScratch = new List<string>();
 
         private static bool? enchantSearch;
 
@@ -238,12 +237,7 @@ namespace DvergerAutomation {
         private static string MagicKey(ItemDrop.ItemData item) {
             KeyBuilder.Clear();
             KeyBuilder.Append(item.m_shared.m_name).Append('\n').Append(item.m_quality);
-            KeyScratch.Clear();
-            KeyScratch.AddRange(item.m_customData.Keys);
-            KeyScratch.Sort(StringComparer.Ordinal);
-            foreach (string field in KeyScratch) {
-                KeyBuilder.Append('\n').Append(field).Append('=').Append(item.m_customData[field]);
-            }
+            ItemIdentity.AppendCustomData(KeyBuilder, item);
             return KeyBuilder.ToString();
         }
     }

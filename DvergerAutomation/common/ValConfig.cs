@@ -1,13 +1,4 @@
-﻿using BepInEx;
-using BepInEx.Configuration;
-using Jotunn.Entities;
-using Jotunn.Managers;
-using Jotunn.Utils;
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
+﻿using BepInEx.Configuration;
 
 namespace DvergerAutomation {
     internal class ValConfig {
@@ -63,6 +54,8 @@ namespace DvergerAutomation {
         public static ConfigEntry<bool> SeekFromHoppers;
         public static ConfigEntry<bool> SeekShowBeam;
         public static ConfigEntry<float> SeekBeamSeconds;
+        public static ConfigEntry<bool> SeekGroundItems;
+        public static ConfigEntry<bool> SeekAllowGround;
 
         // Dverger Grinder - breaks crafted items back down into part of their cost
         public static ConfigEntry<bool> GrinderEnabled;
@@ -70,9 +63,11 @@ namespace DvergerAutomation {
         public static ConfigEntry<float> GrinderYieldPerCore;
         public static ConfigEntry<float> GrinderSpeedPerCore;
         public static ConfigEntry<float> GrinderSecondsPerItem;
+        public static ConfigEntry<int> GrinderFeedRows;
         public static ConfigEntry<int> GrinderQueueSize;
         public static ConfigEntry<int> GrinderStoreRows;
-        public static ConfigEntry<bool> GrinderMagicItems;
+        public static ConfigEntry<bool> GrinderMagicMundane;
+        public static ConfigEntry<bool> GrinderMagicEnchant;
         public static ConfigEntry<string> GrinderBlacklist;
         public static ConfigEntry<int> GrinderBatchesPerTick;
 
@@ -82,6 +77,7 @@ namespace DvergerAutomation {
         public static ConfigEntry<float> LighterInterval;
         public static ConfigEntry<int> LighterStoreRows;
         public static ConfigEntry<string> LighterIgnoredPieces;
+        public static ConfigEntry<bool> LighterPhysicalSmoke;
 
         public const string cfgFolder = "DvergerAutomation";
 
@@ -100,7 +96,6 @@ namespace DvergerAutomation {
                 null,
                 new ConfigurationManagerAttributes { IsAdvanced = true }));
             EnableDebugMode.SettingChanged += Logger.EnableDebugLogging;
-            Logger.CheckEnableDebugLogging();
 
             // For reproducing a slow or vanished chest owner on one machine. Both act on this client's
             // answers to other players' storage requests, and only while debug mode is on.
@@ -142,12 +137,12 @@ namespace DvergerAutomation {
                 "Item prefabs the Hopper's deposit button moves into the Dverger Hopper, comma separated. Defaults to the wood a charcoal kiln burns and every ore a smelter or blast furnace melts. Add Coal to hand it fuel directly. Unlike the AutoSorter's button this does not spare your hotbar - only equipped items are left alone.");
             // The lists are parsed once and cached, and the button's tooltip and the [C] filter both show
             // these settings, so any edit - a click in the filter, the F1 menu, a reload of the file - has
-            // to drop the cache and repaint both.
+            // to drop the cache and repaint both. The Hopper's list is only parsed, never shown.
             DepositKeepFood.SettingChanged += DepositAll.InvalidateFilters;
             DepositIgnoredTypes.SettingChanged += DepositAll.InvalidateFilters;
             DepositIncludeHotbar.SettingChanged += DepositAll.InvalidateFilters;
             DepositIncludeQuickSlots.SettingChanged += DepositAll.InvalidateFilters;
-            HopperDepositItems.SettingChanged += DepositAll.InvalidateFilters;
+            HopperDepositItems.SettingChanged += HopperHub.DepositItemsChanged;
 
             // Client-side: the line is drawn on each player's own screen, from the RPC every Seeking Table
             // sends when it hands out an item.
@@ -156,6 +151,11 @@ namespace DvergerAutomation {
             SeekBeamSeconds = Config.Bind("Client config", "Seeking Table Line Seconds", 1.5f,
                 new ConfigDescription("How long the Seeking Table's retrieval line stays up, in seconds.",
                 new AcceptableValueRange<float>(0.2f, 10f)));
+            // Client-side: what one player's own table window lists. This entry is what the "Ground items"
+            // switch beside the list writes, so the choice outlasts the session.
+            SeekGroundItems = Config.Bind("Client config", "Seeking Table Lists Ground Items", false,
+                "Also lists items lying on the ground within a Dverger Seeking Table's range, and lets you take them from where they lie. Toggled in-game with the Ground items switch beside the table's list.");
+            SeekGroundItems.SettingChanged += SeekingIndex.GroundSettingChanged;
 
             AutomationEnabled = BindServerConfig("Dverger AutoSorter", "Enabled", true, "Enables the Dverger AutoSorter: nearby accessible chests act as a shared material pool when crafting at linked stations or building with the Hammer near the sorter.");
             // The in-panel switch has nothing to switch once the server has turned the whole feature
@@ -178,7 +178,7 @@ namespace DvergerAutomation {
             DepositBoxHeight = BindServerConfig("Dverger AutoSorter", "Deposit Box Height", AutoStore.DefaultHeight, "Rows in the AutoSorter's deposit box. Rows beyond what the container panel shows scroll.", false, AutoStore.MinSize, AutoStore.MaxHeight);
 
             // Read live wherever it matters, so a change takes effect without anything having to be told.
-            SharedChestsEnabled = BindServerConfig("Shared Chests", "Enabled", true, "Lets several players have the same chest, boat hold or cart open at once and move items in and out of it together. The first to open it works as normal; everyone after has their moves carried out by that player's game. Off means a chest someone has open reads as in use, as in vanilla. The AutoSorter's deposit box, the Hopper's storage and the Grinder's results chest are always one player at a time. Does nothing when MultiUserChest is installed, which takes over.");
+            SharedChestsEnabled = BindServerConfig("Shared Chests", "Enabled", true, "Lets several players have the same chest, boat hold or cart open at once and move items in and out of it together. The first to open it works as normal; everyone after has their moves carried out by that player's game. Off means a chest someone has open reads as in use, as in vanilla. The AutoSorter's deposit box, the Hopper's storage, the Lighter's fuel tank and the Grinder's hopper and results chest are always one player at a time. Does nothing when MultiUserChest is installed, which takes over.");
 
             HopperEnabled = BindServerConfig("Dverger Hopper", "Enabled", true, "Enables the Dverger Hopper: it feeds ore and fuel from its own inventory into nearby smelters, charcoal kilns and blast furnaces, and collects what they produce back into that same inventory. Other processing stations (windmills, spinning wheels, eitr refineries, modded ones) can be turned on per Hopper from the [C] button beside its deposit button.");
             HopperInterval = BindServerConfig("Dverger Hopper", "Tick Interval", 4f, "Seconds between service passes. Each pass collects finished product, queues ore, then adds the fuel that ore needs.", false, 1, 60);
@@ -188,7 +188,7 @@ namespace DvergerAutomation {
             HopperSpeedPerCore = BindServerConfig("Dverger Hopper", "Speed Per Core", 0.15f, "Processing speed added per inserted Surtling Core, as a fraction. 0.15 means six cores run linked stations at 1.9x. Fuel cost per item produced is unchanged - only the wait shrinks.", false, 0, 2);
             HopperItemsPerTick = BindServerConfig("Dverger Hopper", "Items Per Tick", 8, "Maximum items the Hopper moves into smelters per pass. Lower values feed more gradually.", false, 1, 100);
             HopperCollectOutput = BindServerConfig("Dverger Hopper", "Collect Output", true, "Pulls finished product straight into the Hopper's inventory instead of letting it drop on the ground. When the Hopper is full, product drops normally.");
-            HopperStoreRows = BindServerConfig("Dverger Hopper", "Storage Rows", HopperStore.DefaultRows, $"Rows in the Hopper's internal storage. The width is fixed at {HopperStore.Width} (the player's own inventory width) because a narrower grid deletes items sitting in the columns it drops.", false, HopperStore.MinRows, HopperStore.MaxRows);
+            HopperStoreRows = BindServerConfig("Dverger Hopper", "Storage Rows", HopperHub.DefaultStoreRows, $"Rows in the Hopper's internal storage. The width is fixed at {MachineStore.Width} (the player's own inventory width) because a narrower grid deletes items sitting in the columns it drops.", false, HopperHub.MinStoreRows, HopperHub.MaxStoreRows);
 
             // The section is the piece's own name, which RegisterJotunnPiece also binds its build settings
             // under - so "Enabled" here is one entry shared with the piece, as for the other two machines.
@@ -199,75 +199,42 @@ namespace DvergerAutomation {
             SeekFromBoats = BindServerConfig("Dverger Seeking Table", "Include Boats", true, "Lists the holds of boats in range, and lets you take from them, including while someone else is aboard.");
             SeekFromCarts = BindServerConfig("Dverger Seeking Table", "Include Carts", true, "Lists carts in range, and lets you take from them, including while someone else is pulling or riding one.");
             SeekFromHoppers = BindServerConfig("Dverger Seeking Table", "Include Hopper Storage", true, "Lists what is in the storage of Dverger Hoppers in range, so finished bars can be taken from the table.");
+            SeekAllowGround = BindServerConfig("Dverger Seeking Table", "Allow Ground Items", true, "Lets players switch on listing the items lying on the ground within a Seeking Table's range, and take them from where they lie. Each player's switch is off until they turn it on. Off hides the switch.");
+            SeekAllowGround.SettingChanged += SeekingIndex.GroundSettingChanged;
 
             // Shares the piece's own "Enabled" entry, as the Seeking Table does.
-            GrinderEnabled = BindServerConfig("Dverger Grinder", "Enabled", true, "Enables the Dverger Grinder: items fed into its funnel are broken down, one at a time, into part of what they cost to craft, which collects in its results chest.");
+            GrinderEnabled = BindServerConfig("Dverger Grinder", "Enabled", true, "Enables the Dverger Grinder: items put in its hopper and sent in with its lever are broken down, one at a time, into part of what they cost to craft, which collects in its results chest.");
             GrinderBaseYield = BindServerConfig("Dverger Grinder", "Base Yield Percent", 20f, "Percent of an item's crafting cost the Grinder returns with no Molten Cores in it. Upgrades count: a sword at quality 3 returns part of everything spent making and upgrading it. Fractions carry over between items, so nothing is lost to rounding.", false, 0, 100);
             GrinderYieldPerCore = BindServerConfig("Dverger Grinder", "Yield Per Core Percent", 2f, "Percent added to the Grinder's yield per inserted Molten Core. The total never goes above 100.", false, 0, 10);
             GrinderSpeedPerCore = BindServerConfig("Dverger Grinder", "Speed Per Core", 0.10f, "Processing speed added per inserted Molten Core, as a fraction. 0.10 means ten cores grind at 2x.", false, 0, 1);
             GrinderSecondsPerItem = BindServerConfig("Dverger Grinder", "Seconds Per Item", 30f, "Seconds the Grinder takes over one item, before any Molten Core speed-up. A stack is ground one craft's worth at a time - 20 arrows, or one bronze bar.", false, 5, 600);
-            GrinderQueueSize = BindServerConfig("Dverger Grinder", "Queue Size", 10, "How many items the Grinder holds waiting to be ground. A stack fed in at once counts as one.", false, 1, 50);
-            GrinderStoreRows = BindServerConfig("Dverger Grinder", "Storage Rows", GrinderStore.DefaultRows, $"Rows in the Grinder's results chest. The width is fixed at {GrinderStore.Width} (the player's own inventory width) because a narrower grid deletes items sitting in the columns it drops.", false, GrinderStore.MinRows, GrinderStore.MaxRows);
-            GrinderMagicItems = BindServerConfig("Dverger Grinder", "Grind Magic Items", false, "When enabled, enchanted (Epic Loot) items can be fed to the Grinder. They return only their ordinary crafting cost, never their enchanting materials.");
-            GrinderBlacklist = BindServerConfig("Dverger Grinder", "Blacklist", "", "Comma-separated item prefab names the Grinder refuses, eg: 'BronzeNails,ArrowWood'. Items sold by a trader are always refused.");
+            GrinderFeedRows = BindServerConfig("Dverger Grinder", "Hopper Rows", GrinderStore.DefaultRows, $"Rows in the Grinder's hopper, where items are put before its lever sends them in to be ground. The width is fixed at {MachineStore.Width}, as for the results chest.", false, GrinderStore.MinRows, GrinderStore.MaxRows);
+            GrinderQueueSize = BindServerConfig("Dverger Grinder", "Queue Size", 16, "Most stacks the Grinder holds in its processing queue. Pulling the lever moves the hopper's contents into the queue, as many stacks as there is room for; the rest stay in the hopper.", false, 1, 64);
+            GrinderStoreRows = BindServerConfig("Dverger Grinder", "Storage Rows", GrinderStore.DefaultRows, $"Rows in the Grinder's results chest. The width is fixed at {MachineStore.Width} (the player's own inventory width) because a narrower grid deletes items sitting in the columns it drops.", false, GrinderStore.MinRows, GrinderStore.MaxRows);
+            GrinderMagicMundane = BindServerConfig("Dverger Grinder", "Enchanted Items Return Mundane Materials", true, "When enabled, the Grinder breaks down enchanted (Epic Loot) items like any other, returning its share of their ordinary crafting cost. With this and Enchanted Items Return Magic Materials both off, enchanted items come out in the results chest as they went in.");
+            GrinderMagicEnchant = BindServerConfig("Dverger Grinder", "Enchanted Items Return Magic Materials", false, "When enabled, enchanted (Epic Loot) items return the Grinder's share of what enchanting them to their rarity costs at the enchanting table - its runestone, dust and essence or reagent - on top of their crafting cost when Enchanted Items Return Mundane Materials is on too. Fractions carry over between items, as for any material.");
+            GrinderBlacklist = BindServerConfig("Dverger Grinder", "Blacklist", "", "Comma-separated item prefab names the Grinder refuses, eg: 'BronzeNails,ArrowWood'. Items sold by a trader are always refused. Refused items come out in the results chest as they went in.");
             GrinderBatchesPerTick = BindServerConfig("Dverger Grinder", "Batches Per Tick", 4, "Most items the Grinder finishes in one second. Only matters when it catches up on time spent unloaded.", true, 1, 20);
 
             // Shares the piece's own "Enabled" entry, as the Grinder does.
             LighterEnabled = BindServerConfig("Dverger Lighter", "Enabled", true, "Enables the Dverger Lighter: it keeps the fires, torches, braziers, ovens and hot tubs around it topped up with fuel from its tank.");
             LighterRadius = BindServerConfig("Dverger Lighter", "Range", 64f, "Radius (meters) around the Lighter in which it keeps pieces fuelled. It only reaches pieces that are loaded, which in vanilla is roughly 120 meters around a player.", false, 1, 128);
             LighterInterval = BindServerConfig("Dverger Lighter", "Tick Interval", 5f, "Seconds between refuelling passes. Each pass tops up everything in range that has room for a whole unit of fuel, the emptiest first.", false, 1, 60);
-            LighterStoreRows = BindServerConfig("Dverger Lighter", "Storage Rows", LighterStore.DefaultRows, $"Rows in the Lighter's fuel tank. The width is fixed at {LighterStore.Width} (the player's own inventory width) because a narrower grid deletes items sitting in the columns it drops.", false, LighterStore.MinRows, LighterStore.MaxRows);
+            LighterStoreRows = BindServerConfig("Dverger Lighter", "Storage Rows", LighterHub.DefaultStoreRows, $"Rows in the Lighter's fuel tank. The width is fixed at {MachineStore.Width} (the player's own inventory width) because a narrower grid deletes items sitting in the columns it drops.", false, LighterHub.MinStoreRows, LighterHub.MaxStoreRows);
             LighterIgnoredPieces = BindServerConfig("Dverger Lighter", "Ignored Pieces", "", "Comma-separated piece prefab names the Lighter never fuels, eg: 'piece_oven,piece_bathtub'. Fires the world placed itself, and anything switched off, are always left alone.");
+            // Server-side although the smoke is spawned by each game for itself: it gathers under roofs and
+            // smokes players and fires out as a fire's does, so everyone should be playing by the same rule.
+            LighterPhysicalSmoke = BindServerConfig("Dverger Lighter", "Physical Smoke", true, "While the Lighter is working, its centre column puffs out the same smoke a fire does. Like a fire's, it gathers under a roof, and with no way out it can choke nearby fires and smoke players out. Off leaves only the harmless wisps from its three pipes.");
         }
 
         /// <summary>
-        /// Binds a server configuration entry for a list of strings with the specified category, key, default value,
-        /// and description. This config will be server authoritative, editable by admins.
+        /// Helper to bind configs for bool types
         /// </summary>
-        /// <param name="category">The category under which the configuration entry is grouped. Cannot be null or empty.</param>
-        /// <param name="key">The unique key identifying the configuration entry within the specified category. Cannot be null or empty.</param>
-        /// <param name="value">The default list of strings to use for the configuration entry if no value is set.</param>
-        /// <param name="description">A description of the configuration entry, used for documentation and display purposes.</param>
-        /// <param name="advanced">Indicates whether the configuration entry is considered advanced. If <see langword="true"/>, the entry may
-        /// be hidden from standard configuration views.</param>
-        /// <returns>A <see cref="ConfigEntry{List{string}}"/> representing the bound server configuration entry.</returns>
-        public static ConfigEntry<List<string>> BindServerConfig(string category, string key, List<string> value, string description, bool advanced = false) {
-            return cfg.Bind(category, key, value,
-                new ConfigDescription(description,
-                null,
-                new ConfigurationManagerAttributes { IsAdminOnly = true, IsAdvanced = advanced })
-                );
-        }
-
-        /// <summary>
-        /// Helper to bind configs for float types
-        /// </summary>
-        /// <param name="config_file"></param>
         /// <param name="category"></param>
         /// <param name="key"></param>
         /// <param name="value"></param>
         /// <param name="description"></param>
-        /// <param name="advanced"></param>
-        /// <param name="valMin"></param>
-        /// <param name="valMax"></param>
-        /// <returns></returns>
-        public static ConfigEntry<float[]> BindServerConfig(string category, string key, float[] value, string description, bool advanced = false, float valMin = 0, float valMax = 150) {
-            return cfg.Bind(category, key, value,
-                new ConfigDescription(description,
-                new AcceptableValueRange<float>(valMin, valMax),
-                new ConfigurationManagerAttributes { IsAdminOnly = true, IsAdvanced = advanced })
-                );
-        }
-
-        /// <summary>
-        ///  Helper to bind configs for bool types
-        /// </summary>
-        /// <param name="config_file"></param>
-        /// <param name="category"></param>
-        /// <param name="key"></param>
-        /// <param name="value"></param>
-        /// <param name="description"></param>
-        /// <param name="acceptableValues"></param>>
+        /// <param name="acceptableValues"></param>
         /// <param name="advanced"></param>
         /// <returns></returns>
         public static ConfigEntry<bool> BindServerConfig(string category, string key, bool value, string description, AcceptableValueBase acceptableValues = null, bool advanced = false) {
@@ -281,7 +248,6 @@ namespace DvergerAutomation {
         /// <summary>
         /// Helper to bind configs for int types
         /// </summary>
-        /// <param name="config_file"></param>
         /// <param name="category"></param>
         /// <param name="key"></param>
         /// <param name="value"></param>
@@ -301,7 +267,6 @@ namespace DvergerAutomation {
         /// <summary>
         /// Helper to bind configs for float types
         /// </summary>
-        /// <param name="config_file"></param>
         /// <param name="category"></param>
         /// <param name="key"></param>
         /// <param name="value"></param>
@@ -321,7 +286,6 @@ namespace DvergerAutomation {
         /// <summary>
         /// Helper to bind configs for strings
         /// </summary>
-        /// <param name="config_file"></param>
         /// <param name="category"></param>
         /// <param name="key"></param>
         /// <param name="value"></param>

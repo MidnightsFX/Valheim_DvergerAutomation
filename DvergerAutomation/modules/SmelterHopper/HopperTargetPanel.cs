@@ -161,7 +161,9 @@ namespace DvergerAutomation {
         /// </summary>
         private static List<Station> Survey(HopperHub target) {
             Dictionary<string, Station> byType = new Dictionary<string, Station>();
-            foreach (Smelter smelter in target.StationsInRange()) {
+            List<Smelter> inRange = new List<Smelter>();
+            target.StationsInRange(inRange);
+            foreach (Smelter smelter in inRange) {
                 string type = HopperHub.StationType(smelter);
                 if (byType.TryGetValue(type, out Station seen)) {
                     seen.Count++;

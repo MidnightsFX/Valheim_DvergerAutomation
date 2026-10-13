@@ -16,8 +16,10 @@ using Object = UnityEngine.Object;
 /// be placed and tested before the art is done. The material helpers are copied from the Seeking Table's
 /// builder, and the prefab helpers shared with the Hopper's, as the Grinder's builder does.
 ///
-/// The model carries no empties. The fuel tank's hatch is found from the wooden stand under it and the
-/// smoke from the top of the centre column, unless the model gains a "StoreDoor" or "SmokePoint" empty.
+/// The model carries no empties. The fuel tank's hatch is found from the wooden stand under it, and the
+/// smoke from the tops of the centre column and the two thin vents beside it, unless the model gains
+/// "StoreDoor", "SmokePoint" or "VentPoint1"/"VentPoint2" empties. All three pipes show wisps of smoke;
+/// only the column puffs out physical smoke.
 /// </summary>
 public static class BuildLighterPrefab {
     private const string ModelPath = "Assets/Custom/Models/DvergerLighter.fbx";
@@ -30,9 +32,22 @@ public static class BuildLighterPrefab {
     private const string TexDir = "Assets/Custom/Materials/Lighter";
     private const string PieceShader = "JVLmock_Custom/Piece";
 
-    // The smelter's chimney smoke, made small: a thin wisp from the column while there is fuel to give.
+    // The smelter's chimney smoke, made small: a wisp from each upward pipe while there is fuel to give.
+    // Its cone has a 0.2m radius at full size, so each is scaled to its pipe's mouth.
     private const string SmokePath = "Assets/Custom/Effects/DA_SmelterSmoke.prefab";
-    private const float SmokeScale = 0.35f;
+    private const float ColumnSmokeScale = 0.45f;
+    private const float VentSmokeScale = 0.25f;
+
+    // Physical smoke from the centre column only, set up as the Hopper's vent: vanilla's own SmokeBall
+    // through a mock, at the smelter's pace. Layer 31 is "smoke", which the spawner tests so it stops
+    // when its smoke piles up against a ceiling.
+    private const string SmokeBallMock = "JVLmock_SmokeBall";
+    private const int SmokeLayer = 31;
+    // Above the mouth, so the smoke balls are not born inside the column's collider.
+    private const float PhysicalSmokeLift = 0.1f;
+
+    // The two thin vents beside the column are told apart by how far apart they stand. Metres.
+    private const float VentSeparation = 0.15f;
 
     // Substance Painter texture sets, named after the FBX materials they will be painted onto, with the
     // flat colour each falls back to until it is painted, and whether it is metal.
@@ -62,7 +77,8 @@ public static class BuildLighterPrefab {
     private const float HatchAboveStand = 0.12f;
     // Measured from the model in Blender, for when neither the empty nor the stand can be found.
     private static readonly Vector3 HatchFallback = new Vector3(0.007f, 0.49f, -0.336f);
-    private static readonly Vector3 SmokeFallback = new Vector3(0f, 1.73f, 0.03f);
+    private static readonly Vector3 SmokeFallback = new Vector3(0f, 1.713f, 0.03f);
+    private static readonly Vector3[] VentFallback = { new Vector3(-0.201f, 1.65f, 0.243f), new Vector3(0.319f, 1.719f, 0.128f) };
 
     private const float IconDistance = 0.7f;
 
@@ -227,7 +243,7 @@ public static class BuildLighterPrefab {
         GameObject root = new GameObject(PieceName);
         root.layer = DefaultLayer;
 
-        // An identity wrapper, so everything added here is in real metres. LighterStore.ConfigurePrefab
+        // An identity wrapper, so everything added here is in real metres. MachineStore.Setup
         // looks the tank up at "Lighter_Body/LighterStore".
         GameObject bodyGo = new GameObject("Lighter_Body");
         bodyGo.layer = PieceLayer;
@@ -272,20 +288,37 @@ public static class BuildLighterPrefab {
         container.m_discoverStat = PlayerStatType.None;
 
         // ---- smoke while it has fuel to give ---------------------------------------
+        // LighterHub shows this holder while the Lighter is working, and the physical smoke under it only
+        // while the server allows it.
         GameObject active = new GameObject("_active");
         active.transform.SetParent(body, worldPositionStays: false);
         active.layer = PieceLayer;
+
+        Vector3 column = SmokePoint(root.transform, modelInstance, notes);
+        List<Vector3> vents = VentPoints(root.transform, modelInstance, notes);
         GameObject smokeAsset = AssetDatabase.LoadAssetAtPath<GameObject>(SmokePath);
         if (smokeAsset != null) {
-            // Copied inline, not nested, like the Hopper's chimney smoke.
-            GameObject smoke = Object.Instantiate(smokeAsset, active.transform, false);
-            smoke.name = "Smoke";
-            smoke.transform.position = SmokePoint(root.transform, modelInstance, notes);
-            smoke.transform.rotation = Quaternion.identity;
-            smoke.transform.localScale = Vector3.one * SmokeScale;
+            AddWisp(smokeAsset, active.transform, "SmokeColumn", column, ColumnSmokeScale);
+            for (int i = 0; i < vents.Count; ++i) {
+                AddWisp(smokeAsset, active.transform, "SmokeVent" + (i + 1), vents[i], VentSmokeScale);
+            }
         } else {
-            notes.Add("Missing " + SmokePath + " - the Lighter works without smoke.");
+            notes.Add("Missing " + SmokePath + " - the Lighter has no visible smoke.");
         }
+
+        GameObject physical = new GameObject("PhysicalSmoke");
+        physical.transform.SetParent(active.transform, worldPositionStays: false);
+        physical.layer = PieceLayer;
+        physical.transform.position = column + Vector3.up * PhysicalSmokeLift;
+        SmokeSpawner spawner = physical.AddComponent<SmokeSpawner>();
+        spawner.m_smokePrefab = BuildHopperPrefab.EnsureMock(SmokeBallMock, notes);
+        spawner.m_interval = 0.5f;
+        spawner.m_testMask = 1 << SmokeLayer;
+        spawner.m_testRadius = 0.75f;
+        spawner.m_spawnRadius = 0f;
+        spawner.m_stopFireOnStart = false;
+        notes.Add("Smoke: column at " + column.ToString("F2") + ", " + vents.Count + " vents, physical smoke from the column.");
+
         active.SetActive(false);
 
         // ---- piece components --------------------------------------------------------
@@ -326,6 +359,7 @@ public static class BuildLighterPrefab {
 
         LighterHub hub = root.AddComponent<LighterHub>();
         hub.ActiveVisuals = active;
+        hub.PhysicalSmoke = physical;
 
         // ---- save -------------------------------------------------------------------
         Directory.CreateDirectory(PrefabDir);
@@ -387,36 +421,85 @@ public static class BuildLighterPrefab {
         return root.position + HatchFallback;
     }
 
-    // An empty named SmokePoint if the model has one; otherwise the middle of the highest vertices of the
-    // centre column, which is the DepositAndCenter mesh's top.
+    // The wisp keeps the effect's own -90 X rotation, which is what points its cone up; it is only moved
+    // and scaled. Its particles scale with its own transform (Local scaling mode).
+    private static void AddWisp(GameObject asset, Transform parent, string name, Vector3 at, float scale) {
+        GameObject wisp = Object.Instantiate(asset, parent, false);
+        wisp.name = name;
+        wisp.transform.position = at;
+        wisp.transform.localScale = Vector3.one * scale;
+    }
+
+    /// <summary>Every vertex of the meshes painted as the named FBX slot, in world space.</summary>
+    private static List<Vector3> SlotVertices(GameObject model, string slot, List<string> notes) {
+        List<Vector3> world = new List<Vector3>();
+        Renderer rend = RendererFor(model, slot);
+        MeshFilter filter = rend != null ? rend.GetComponent<MeshFilter>() : null;
+        if (filter == null || filter.sharedMesh == null) { return world; }
+        try {
+            foreach (Vector3 v in filter.sharedMesh.vertices) { world.Add(filter.transform.TransformPoint(v)); }
+        } catch (Exception ex) {
+            notes.Add("Could not read the " + slot + " mesh's vertices (" + ex.Message + ").");
+        }
+        return world;
+    }
+
+    // An empty named SmokePoint if the model has one; otherwise the mouth of the centre column - the top
+    // of the DepositAndCenter mesh. The mouth is cut at a slant, so its middle is taken from the column's
+    // round body just below it (the band within a quarter metre of the top) rather than from the highest
+    // vertices, which all sit on the high lip.
     private static Vector3 SmokePoint(Transform root, GameObject model, List<string> notes) {
         Transform point = BuildHopperPrefab.FindDeep(root, "SmokePoint");
         if (point != null) { return point.position; }
-        Renderer column = RendererFor(model, "DepositAndCenter");
-        MeshFilter filter = column != null ? column.GetComponent<MeshFilter>() : null;
-        if (filter != null && filter.sharedMesh != null) {
-            try {
-                Vector3[] verts = filter.sharedMesh.vertices;
-                float top = float.MinValue;
-                Vector3[] world = new Vector3[verts.Length];
-                for (int i = 0; i < verts.Length; ++i) {
-                    world[i] = filter.transform.TransformPoint(verts[i]);
-                    top = Mathf.Max(top, world[i].y);
-                }
-                Vector3 sum = Vector3.zero;
-                int count = 0;
-                foreach (Vector3 v in world) {
-                    if (v.y < top - 0.04f) { continue; }
-                    sum += v;
-                    ++count;
-                }
-                if (count > 0) { return sum / count + Vector3.up * 0.02f; }
-            } catch (Exception ex) {
-                notes.Add("Could not read the column's vertices (" + ex.Message + ").");
+        List<Vector3> verts = SlotVertices(model, "DepositAndCenter", notes);
+        if (verts.Count > 0) {
+            float top = float.MinValue;
+            foreach (Vector3 v in verts) { top = Mathf.Max(top, v.y); }
+            Bounds band = new Bounds();
+            bool any = false;
+            foreach (Vector3 v in verts) {
+                if (v.y < top - 0.25f) { continue; }
+                if (!any) { band = new Bounds(v, Vector3.zero); any = true; } else { band.Encapsulate(v); }
+            }
+            return new Vector3(band.center.x, top, band.center.z);
+        }
+        notes.Add("No 'SmokePoint' empty or readable column - the column's smoke was placed at the measured position.");
+        return root.position + SmokeFallback;
+    }
+
+    // Empties named VentPoint1 and VentPoint2 if the model has them; otherwise the top of each upright
+    // pipe in the SecondaryVents mesh, told apart by where they stand.
+    private static List<Vector3> VentPoints(Transform root, GameObject model, List<string> notes) {
+        List<Vector3> points = new List<Vector3>();
+        for (int n = 1; n <= 2; ++n) {
+            Transform empty = BuildHopperPrefab.FindDeep(root, "VentPoint" + n);
+            if (empty != null) { points.Add(empty.position); }
+        }
+        if (points.Count > 0) { return points; }
+
+        // Each vertex joins the first pipe standing within VentSeparation of it, seen from above.
+        List<Bounds> pipes = new List<Bounds>();
+        foreach (Vector3 v in SlotVertices(model, "SecondaryVents", notes)) {
+            int found = -1;
+            for (int i = 0; i < pipes.Count && found < 0; ++i) {
+                Vector2 offset = new Vector2(v.x - pipes[i].center.x, v.z - pipes[i].center.z);
+                if (offset.magnitude < VentSeparation) { found = i; }
+            }
+            if (found < 0) {
+                pipes.Add(new Bounds(v, Vector3.zero));
+            } else {
+                Bounds b = pipes[found];
+                b.Encapsulate(v);
+                pipes[found] = b;
             }
         }
-        notes.Add("No 'SmokePoint' empty or readable column - the smoke was placed at the measured position.");
-        return root.position + SmokeFallback;
+        foreach (Bounds pipe in pipes) { points.Add(new Vector3(pipe.center.x, pipe.max.y, pipe.center.z)); }
+        if (points.Count == 2) { return points; }
+
+        notes.Add("Expected 2 vent pipes in the SecondaryVents mesh, found " + points.Count + " - their smoke was placed at the measured positions.");
+        points.Clear();
+        foreach (Vector3 fallback in VentFallback) { points.Add(root.position + fallback); }
+        return points;
     }
 
     // ==================================================================== icon

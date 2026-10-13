@@ -253,7 +253,7 @@ public static class BuildHopperPrefab {
         root.layer = DefaultLayer;
 
         // Hopper_Body is a clean identity container, so everything this script adds (store, smoke)
-        // lives in real-world metres. HopperStore.ConfigurePrefab looks the store up at
+        // lives in real-world metres. MachineStore.Setup looks the store up at
         // "Hopper_Body/HopperStore".
         GameObject bodyGo = new GameObject("Hopper_Body");
         bodyGo.layer = PieceLayer;
@@ -356,7 +356,7 @@ public static class BuildHopperPrefab {
         container.m_checkGuardStone = true;
         container.m_autoDestroyEmpty = false;
         container.m_discoverStat = PlayerStatType.None;
-        // m_rootObjectOverride is bound at runtime by HopperStore.ConfigurePrefab: the child has no
+        // m_rootObjectOverride is bound at runtime by MachineStore.Setup: the child has no
         // ZNetView of its own and Container.Awake would NRE on the very next line without it.
 
         // Vanilla chests open by swapping two GameObjects. This model has no hatch meshes, so the
@@ -462,7 +462,6 @@ public static class BuildHopperPrefab {
 
         HopperHub hub = root.AddComponent<HopperHub>();
         hub.EnabledVisuals = enabledVisuals;
-        hub.SpinningGears = new Transform[0];
 
         // ---- save -------------------------------------------------------------
         Directory.CreateDirectory(PrefabDir);

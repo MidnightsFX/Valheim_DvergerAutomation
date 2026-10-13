@@ -70,7 +70,7 @@ namespace DvergerAutomation {
         public string GetHoverText() {
             if (!IsLive) { return ""; }
             string text = StatusLine();
-            if (!PrivateArea.CheckAccess(transform.position, 0f, flash: false)) {
+            if (!StorageScan.Permits(transform.position, StorageScan.LocalPlayerId())) {
                 return Localization.instance.Localize(text + "\n$piece_noaccess");
             }
             text += IsAwake
@@ -118,7 +118,8 @@ namespace DvergerAutomation {
         }
 
         private void RPC_Beam(long sender, Vector3 target) {
-            if (!ValConfig.SeekShowBeam.Value) { return; }
+            // A dedicated server has nobody to show it to.
+            if (!ValConfig.SeekShowBeam.Value || Player.m_localPlayer == null) { return; }
             RetrievalBeam.Play(BeamOrigin, target, ValConfig.SeekBeamSeconds.Value);
         }
     }

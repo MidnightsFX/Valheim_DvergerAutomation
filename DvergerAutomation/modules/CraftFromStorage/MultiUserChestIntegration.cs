@@ -8,15 +8,19 @@ namespace DvergerAutomation {
     /// Nothing of MultiUserChest's is called. Crafting from a chest its players have open goes through
     /// this mod's own request to the owner (see <see cref="StorageReserve"/>), which works whether or not
     /// it is installed. What it does need to be told is which containers to stay out of: the AutoSorter's
-    /// deposit box and the Hopper's store are each written by code that runs only for their owner - the
-    /// sort on closing, the deposit buttons, the Hopper's feed - and a guest in either would be looking at
-    /// a panel half of whose buttons do nothing. MultiUserChest treats a container whose ZDO carries
+    /// deposit box and the machines' stores are each written by code that runs only for their owner - the
+    /// sort on closing, the deposit buttons, the machines' own work - and a guest in any of them would be
+    /// looking at a panel half of whose buttons do nothing. MultiUserChest treats a container whose ZDO carries
     /// <c>MUC_Ignore</c> as vanilla: one player at a time.
     /// </summary>
     internal static class MultiUserChestIntegration {
         internal const string MultiUserChestGUID = "com.maxsch.valheim.MultiUserChest";
 
-        private const string IgnoreKey = "MUC_Ignore";
+        /// <summary>
+        /// MultiUserChest's opt-out flag on a container's ZDO. Shared chests honour it too, so one marking
+        /// keeps a container exclusive under either mod.
+        /// </summary>
+        internal static readonly int IgnoreHash = "MUC_Ignore".GetStableHashCode();
 
         // Resolved once: plugins do not come and go.
         private static bool? present;
@@ -36,7 +40,7 @@ namespace DvergerAutomation {
         internal static void KeepExclusive(ZNetView nview) {
             if (!Present || nview == null || !nview.IsValid() || !nview.IsOwner()) { return; }
             ZDO zdo = nview.GetZDO();
-            if (!zdo.GetBool(IgnoreKey)) { zdo.Set(IgnoreKey, true); }
+            if (!zdo.GetBool(IgnoreHash)) { zdo.Set(IgnoreHash, true); }
         }
     }
 }

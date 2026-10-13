@@ -3,7 +3,6 @@ using GUIFramework;
 using Jotunn.Managers;
 using TMPro;
 using UnityEngine;
-using UnityEngine.Events;
 using UnityEngine.EventSystems;
 
 namespace DvergerAutomation {
@@ -22,8 +21,10 @@ namespace DvergerAutomation {
     ///  - click, right-click, controller A or X: one stack;
     ///  - shift-click, controller LT+A: the amount dialog;
     ///  - ctrl-click, controller LT+X: everything that fits.
+    ///
+    /// The window itself is built in SeekingTablePanel.Build.cs.
     /// </summary>
-    internal static class SeekingTablePanel {
+    internal static partial class SeekingTablePanel {
         private const string PanelName = "DA_SeekingPanel";
         private const int Width = 8;
         private const int RowStep = 4;
@@ -54,6 +55,9 @@ namespace DvergerAutomation {
         private static TMP_Text status;
         private static TMP_Text detail;
         private static readonly List<TabCell> Tabs = new List<TabCell>();
+        private static FilterCell groundSwitch;
+        private static GameObject groundPlate;
+        private const float GroundSwitchGap = 8f;
 
         private static Inventory display;
         // The split dialog's "inventory" while it is asking how many of an entry to take. Never holds
@@ -75,6 +79,36 @@ namespace DvergerAutomation {
         private static bool resetView;
         private static bool blocking;
 
+        // The game writes "37/50" into each cell's amount label every frame; here a cell is every unit in
+        // range, so it shows that instead. Two writers a frame would rebuild every label's text every
+        // frame, so the game is pointed at a hidden stand-in, and the real labels are written here, and
+        // only when a cell's figure changes.
+        private static TMP_Text amountStandIn;
+        private static readonly List<TMP_Text> AmountLabels = new List<TMP_Text>();
+        private static readonly List<int> AmountShown = new List<int>();
+        private const int AmountHidden = -1;
+        private const int AmountUnknown = int.MinValue;
+
+        // Display copies of the entries' samples, kept while the index has not regrouped, so a keystroke in
+        // the search box does not copy every shown item again.
+        private static Dictionary<ItemDrop.ItemData, ItemDrop.ItemData> cellCopies = new Dictionary<ItemDrop.ItemData, ItemDrop.ItemData>();
+        private static Dictionary<ItemDrop.ItemData, ItemDrop.ItemData> spareCopies = new Dictionary<ItemDrop.ItemData, ItemDrop.ItemData>();
+        private static int copiesVersion = -1;
+
+        // How many entries each tab holds, counted once per regroup.
+        private static readonly List<int> TabCounts = new List<int>();
+        private static int tabCountsVersion = -1;
+
+        // What the footer and the detail line were last written from, so they are worded only on a change.
+        private static int statusChests = -1;
+        private static int statusGround = -1;
+        private static int statusRadius = -1;
+        private static bool statusGroundOn;
+        private static SeekEntry detailEntry;
+        private static int detailChests = -1;
+        private static int detailGround = -1;
+        private static int detailMode = -1;
+
         internal static bool IsOpen => isOpen;
 
         internal static bool IsSplitMarker(Inventory inventory) => inventory != null && inventory == SplitMarker;
@@ -93,6 +127,10 @@ namespace DvergerAutomation {
             shownVersion = -1;
             shownDirty = true;
             resetView = true;
+            // The grid only grows while the window is up (see Refilter); each opening starts it afresh.
+            display = null;
+            tabCountsVersion = -1;
+            ForgetTexts();
             SeekingIndex.Open(table);
 
             gui.Show(null, 1);
@@ -115,6 +153,8 @@ namespace DvergerAutomation {
             if (panel != null) { panel.SetActive(false); }
             Shown.Clear();
             if (display != null) { display.m_inventory.Clear(); }
+            cellCopies.Clear();
+            copiesVersion = -1;
             SeekingIndex.Close();
         }
 
@@ -128,7 +168,12 @@ namespace DvergerAutomation {
             status = null;
             detail = null;
             Tabs.Clear();
+            groundSwitch = null;
+            groundPlate = null;
             display = null;
+            amountStandIn = null;
+            AmountLabels.Clear();
+            AmountShown.Clear();
         }
 
         // ---- every frame ---------------------------------------------------------------
@@ -154,6 +199,7 @@ namespace DvergerAutomation {
             }
 
             grid.UpdateInventory(display, null, null);
+            CaptureAmountLabels();
             if (resetView) {
                 grid.ResetView();
                 resetView = false;
@@ -192,20 +238,39 @@ namespace DvergerAutomation {
 
             int rows = Mathf.Max(RowStep, (Shown.Count + Width - 1) / Width);
             rows = (rows + RowStep - 1) / RowStep * RowStep;
-            // A new grid size rebuilds every cell, so the inventory is only replaced when the size moves.
+            // A new grid size rebuilds every cell, so while the window is up the grid only ever grows:
+            // typing a search narrows the list without rebuilding it, and empty cells at the end cost little.
+            if (display != null) { rows = Mathf.Max(rows, display.GetHeight()); }
             if (display == null || display.GetHeight() != rows) {
                 display = new Inventory("$DA_seek_name", null, Width, rows);
             }
+
+            // A regroup can hand back new samples; the copies are only kept for the same ones.
+            if (copiesVersion != SeekingIndex.Version) {
+                cellCopies.Clear();
+                copiesVersion = SeekingIndex.Version;
+            }
             List<ItemDrop.ItemData> cells = display.m_inventory;
             cells.Clear();
+            spareCopies.Clear();
             for (int i = 0; i < Shown.Count; ++i) {
-                ItemDrop.ItemData copy = Shown[i].Sample.Clone();
+                ItemDrop.ItemData sample = Shown[i].Sample;
+                if (!cellCopies.TryGetValue(sample, out ItemDrop.ItemData copy)) {
+                    copy = sample.Clone();
+                    copy.m_equipped = false;
+                }
                 copy.m_stack = Mathf.Max(1, Shown[i].Total);
-                copy.m_equipped = false;
                 copy.m_gridPos = new Vector2i(i % Width, i / Width);
+                spareCopies[sample] = copy;
                 cells.Add(copy);
             }
-            PaintTabs();
+            // What is shown now is what is kept for the next keystroke.
+            Dictionary<ItemDrop.ItemData, ItemDrop.ItemData> kept = spareCopies;
+            spareCopies = cellCopies;
+            cellCopies = kept;
+            spareCopies.Clear();
+
+            if (tabCountsVersion != SeekingIndex.Version) { PaintTabs(); }
         }
 
         private static SeekEntry EntryAt(Vector2i pos) {
@@ -213,16 +278,44 @@ namespace DvergerAutomation {
             return index >= 0 && index < Shown.Count ? Shown[index] : null;
         }
 
-        // The game writes "37/50" on a stack; here a cell is every unit in range, so it shows that.
-        private static void Amounts() {
+        // Points every cell the grid has built since the last look at the stand-in, keeping its real
+        // label to write here (see amountStandIn).
+        private static void CaptureAmountLabels() {
             List<InventoryElement> elements = grid.m_elements;
-            for (int i = 0; i < Shown.Count && i < elements.Count; ++i) {
-                InventoryElement element = elements[i];
-                if (element == null || element.m_amount == null) { continue; }
-                SeekEntry entry = Shown[i];
-                bool show = entry.Total > 1 || entry.Sample.m_shared.m_maxStackSize > 1;
-                element.m_amount.enabled = show;
-                if (show) { element.m_amount.text = Count(entry.Total); }
+            if (AmountLabels.Count == elements.Count && (elements.Count == 0 || elements[0].m_amount == amountStandIn)) { return; }
+            if (amountStandIn == null) {
+                GameObject go = new GameObject("DA_SeekAmountStandIn", typeof(RectTransform));
+                go.SetActive(false);
+                go.transform.SetParent(panel.transform, false);
+                amountStandIn = go.AddComponent<TextMeshProUGUI>();
+            }
+            AmountLabels.Clear();
+            AmountShown.Clear();
+            foreach (InventoryElement element in elements) {
+                if (element.m_amount != amountStandIn) {
+                    AmountLabels.Add(element.m_amount);
+                    element.m_amount = amountStandIn;
+                } else {
+                    AmountLabels.Add(null);
+                }
+                AmountShown.Add(AmountUnknown);
+            }
+        }
+
+        // A cell shows every unit in range: its entry's total, written only when it changes.
+        private static void Amounts() {
+            for (int i = 0; i < AmountLabels.Count; ++i) {
+                TMP_Text label = AmountLabels[i];
+                if (label == null) { continue; }
+                int shown = AmountHidden;
+                if (i < Shown.Count) {
+                    SeekEntry entry = Shown[i];
+                    if (entry.Total > 1 || entry.Sample.m_shared.m_maxStackSize > 1) { shown = entry.Total; }
+                }
+                if (AmountShown[i] == shown) { continue; }
+                AmountShown[i] = shown;
+                label.enabled = shown != AmountHidden;
+                if (shown != AmountHidden) { label.text = Count(shown); }
             }
         }
 
@@ -230,23 +323,58 @@ namespace DvergerAutomation {
             return total >= 10000 ? (total / 1000f).ToString("0.#") + "k" : total.ToString();
         }
 
+        // Written every frame they could change, but worded only when what they say does.
         private static void Texts() {
             if (status != null) {
-                status.text = Localization.instance.Localize("$DA_seek_footer",
-                    SeekingIndex.Chests.Count.ToString(), Mathf.RoundToInt(SeekingIndex.Radius).ToString());
+                int chests = SeekingIndex.Chests.Count;
+                int ground = SeekingIndex.Ground.Count;
+                int radius = Mathf.RoundToInt(SeekingIndex.Radius);
+                bool groundOn = SeekingIndex.GroundEnabled;
+                if (chests != statusChests || ground != statusGround || radius != statusRadius || groundOn != statusGroundOn) {
+                    statusChests = chests;
+                    statusGround = ground;
+                    statusRadius = radius;
+                    statusGroundOn = groundOn;
+                    status.text = groundOn
+                        ? Localization.instance.Localize("$DA_seek_footer_ground", chests.ToString(), ground.ToString(), radius.ToString())
+                        : Localization.instance.Localize("$DA_seek_footer", chests.ToString(), radius.ToString());
+                }
             }
             if (detail == null) { return; }
 
             SeekEntry pointed = Pointed();
-            if (pointed != null) {
-                detail.text = Localization.instance.Localize(pointed.Chests == 1 ? "$DA_seek_in_chest" : "$DA_seek_in_chests", pointed.Chests.ToString());
-            } else if (capped) {
-                detail.text = Localization.instance.Localize("$DA_seek_capped");
-            } else {
-                detail.text = Shown.Count == 0 && SeekingIndex.Entries.Count > 0
-                    ? Localization.instance.Localize("$DA_seek_no_match")
-                    : "";
+            int mode = pointed != null ? 0 : capped ? 1 : Shown.Count == 0 && SeekingIndex.Entries.Count > 0 ? 2 : 3;
+            int pointedChests = pointed != null ? pointed.Chests : -1;
+            int pointedGround = pointed != null ? pointed.GroundDrops : -1;
+            if (mode == detailMode && pointed == detailEntry && pointedChests == detailChests && pointedGround == detailGround) { return; }
+            detailMode = mode;
+            detailEntry = pointed;
+            detailChests = pointedChests;
+            detailGround = pointedGround;
+            switch (mode) {
+                case 0: detail.text = Where(pointed); break;
+                case 1: detail.text = Localization.instance.Localize("$DA_seek_capped"); break;
+                case 2: detail.text = Localization.instance.Localize("$DA_seek_no_match"); break;
+                default: detail.text = ""; break;
             }
+        }
+
+        // The texts are worded afresh the next frame.
+        private static void ForgetTexts() {
+            statusChests = -1;
+            detailMode = -1;
+            detailEntry = null;
+        }
+
+        private static string Where(SeekEntry entry) {
+            Localization loc = Localization.instance;
+            string chests = entry.Chests.ToString();
+            string ground = entry.GroundDrops.ToString();
+            if (entry.GroundDrops == 0) { return loc.Localize(entry.Chests == 1 ? "$DA_seek_in_chest" : "$DA_seek_in_chests", chests); }
+            if (entry.Chests == 0) { return loc.Localize("$DA_seek_on_ground", ground); }
+            return entry.Chests == 1
+                ? loc.Localize("$DA_seek_in_chest_ground", ground)
+                : loc.Localize("$DA_seek_in_chests_ground", chests, ground);
         }
 
         // The cell under the mouse, or the controller's selected cell while the window has its focus.
@@ -388,14 +516,38 @@ namespace DvergerAutomation {
         // The open type is lit. With All open every type shows plainly, since all of them are listed;
         // otherwise the others are dimmed.
         private static void PaintTabs() {
-            foreach (TabCell cell in Tabs) {
+            CountTabs();
+            for (int i = 0; i < Tabs.Count; ++i) {
+                TabCell cell = Tabs[i];
                 bool lit = cell.Kind == tab && (cell.Kind != TabKind.Category || cell.Category == tabCategory);
                 bool plain = lit || (tab == TabKind.All && cell.Kind == TabKind.Category);
                 if (cell.Lit != null && cell.Lit.activeSelf != lit) { cell.Lit.SetActive(lit); }
                 Color color = plain ? Color.white : DimColor;
                 if (cell.Icon != null) { cell.Icon.color = color; }
                 if (cell.Label != null) { cell.Label.color = color; }
-                if (cell.Tooltip != null) { cell.Tooltip.Set(TabTitle(cell), TabText(cell)); }
+                if (cell.Tooltip != null) {
+                    cell.Tooltip.Set(TabTitle(cell), Localization.instance.Localize("$DA_seek_tab_count", TabCounts[i].ToString()));
+                }
+            }
+            PaintGround();
+        }
+
+        // Every tab's count in one walk of the entries, once per regroup.
+        private static void CountTabs() {
+            if (tabCountsVersion == SeekingIndex.Version && TabCounts.Count == Tabs.Count) { return; }
+            tabCountsVersion = SeekingIndex.Version;
+            TabCounts.Clear();
+            for (int i = 0; i < Tabs.Count; ++i) { TabCounts.Add(0); }
+            foreach (SeekEntry entry in SeekingIndex.Entries) {
+                if (entry.Total <= 0) { continue; }
+                for (int i = 0; i < Tabs.Count; ++i) {
+                    TabCell cell = Tabs[i];
+                    if (cell.Kind == TabKind.All
+                        || (cell.Kind == TabKind.Enchanted && entry.Magic)
+                        || (cell.Kind == TabKind.Category && entry.Category == cell.Category)) {
+                        ++TabCounts[i];
+                    }
+                }
             }
         }
 
@@ -407,233 +559,26 @@ namespace DvergerAutomation {
             }
         }
 
-        private static string TabText(TabCell cell) {
-            int count = 0;
-            foreach (SeekEntry entry in SeekingIndex.Entries) {
-                if (entry.Total <= 0) { continue; }
-                if (cell.Kind == TabKind.All
-                    || (cell.Kind == TabKind.Enchanted && entry.Magic)
-                    || (cell.Kind == TabKind.Category && entry.Category == cell.Category)) {
-                    ++count;
-                }
-            }
-            return Localization.instance.Localize("$DA_seek_tab_count", count.ToString());
+        // ---- the ground switch ------------------------------------------------------------
+
+        // The player's own setting, kept in the client config so it outlasts the session. Its change hook
+        // has the index look at the ground now, or let go of it (SeekingIndex.GroundSettingChanged).
+        private static void ToggleGround() {
+            ValConfig.SeekGroundItems.Value = !ValConfig.SeekGroundItems.Value;
+            PaintGround();
         }
 
-        // ---- building ----------------------------------------------------------------------
-
-        private static bool Build(InventoryGui gui) {
-            if (panel != null) { return true; }
-            if (gui.m_container == null || gui.m_containerGrid == null) { return false; }
-
-            Transform parent = gui.m_container.parent;
-            Transform stale = parent.Find(PanelName);
-            if (stale != null) { Object.Destroy(stale.gameObject); }
-
-            // Copied under a switched-off holder, then stripped, then moved into place. The chest panel is
-            // still live if a chest was the last thing open, and a live copy would wake every component in
-            // it - other mods' among them - only for them to be thrown away. Woken and then destroyed, a
-            // component that registers itself somewhere could take its original's registration with it.
-            GameObject holder = new GameObject("DA_SeekBuild");
-            holder.SetActive(false);
-            GameObject go = Object.Instantiate(gui.m_container.gameObject, holder.transform, false);
-            go.name = PanelName;
-            go.SetActive(false);
-            for (int i = go.transform.childCount - 1; i >= 0; --i) {
-                Transform child = go.transform.GetChild(i);
-                if (!VanillaChildren.Contains(child.name)) { Object.DestroyImmediate(child.gameObject); }
+        // Lit while on; hidden altogether when the server does not allow it.
+        private static void PaintGround() {
+            if (groundPlate == null || groundSwitch == null) { return; }
+            bool allowed = ValConfig.SeekAllowGround.Value;
+            if (groundPlate.activeSelf != allowed) { groundPlate.SetActive(allowed); }
+            bool on = ValConfig.SeekGroundItems.Value;
+            FilterPopupUI.Paint(groundSwitch, on ? CategoryState.On : CategoryState.Off);
+            if (groundSwitch.Tooltip != null) {
+                groundSwitch.Tooltip.Set("$DA_seek_ground", Localization.instance.Localize(
+                    (on ? "$DA_seek_ground_on" : "$DA_seek_ground_off") + "\n$DA_seek_ground_click"));
             }
-            go.transform.SetParent(parent, false);
-            Object.Destroy(holder);
-
-            Transform gridTwin = Twin(gui.m_container, go.transform, gui.m_containerGrid.transform);
-            InventoryGrid copy = gridTwin != null ? gridTwin.GetComponent<InventoryGrid>() : null;
-            if (copy == null) {
-                Logger.LogWarning("[Seeking Table] the chest panel has no grid to copy; the table cannot be shown.");
-                Object.Destroy(go);
-                return false;
-            }
-            SetUpGrid(gui, copy);
-
-            // The copied panel's controller focus starts out on, which would make it a second live group
-            // beside the player's grid. It is switched on only while the game's chest slot has focus.
-            group = go.GetComponent<UIGroupHandler>();
-            if (group != null) { group.SetActive(false); }
-
-            // Nothing to take all of or stack into here, and the weight would be of nothing real.
-            HideTwin(gui, go, gui.m_takeAllButton != null ? gui.m_takeAllButton.transform : null);
-            HideTwin(gui, go, gui.m_stackAllButton != null ? gui.m_stackAllButton.transform : null);
-            // The weight's number sits in a holder with its icon; the holder goes.
-            Transform weight = Twin(gui.m_container, go.transform, gui.m_containerWeight != null ? gui.m_containerWeight.transform : null);
-            if (weight != null) { (weight.parent != go.transform ? weight.parent : weight).gameObject.SetActive(false); }
-
-            TMP_Text title = Twin(gui.m_container, go.transform, gui.m_containerName != null ? gui.m_containerName.transform : null)?.GetComponent<TMP_Text>();
-            if (title != null) {
-                status = CloneLabel(title, "DA_SeekStatus", new Vector2(0f, 1f), new Vector2(18f, title.rectTransform.anchoredPosition.y), TextAlignmentOptions.Left);
-                detail = CloneLabel(title, "DA_SeekDetail", new Vector2(1f, 1f), new Vector2(-18f, title.rectTransform.anchoredPosition.y), TextAlignmentOptions.Right);
-                title.gameObject.SetActive(false);
-            }
-
-            search = CloneSearch(go, title);
-            BuildTabs(gui, go);
-
-            panel = go;
-            return true;
-        }
-
-        private static void SetUpGrid(InventoryGui gui, InventoryGrid copy) {
-            // The chest's cells come along with the copy, but the list that tracks them does not: the grid
-            // makes its own, and only does so when it thinks the size changed.
-            if (copy.m_gridRoot != null) {
-                foreach (Transform cell in copy.m_gridRoot) { Object.Destroy(cell.gameObject); }
-            }
-            copy.m_elements.Clear();
-            copy.m_width = 0;
-            copy.m_height = 0;
-
-            // The game calls every one of these without checking anyone is listening.
-            copy.m_onSelected = OnSelected;
-            copy.m_onRightClick = OnRightClick;
-            copy.m_onReleased = (g, i, p) => { };
-            copy.m_onEnter = (g, p) => { };
-            copy.OnSetTouchSelection = g => { };
-            copy.CanDropDragOntoItem = i => false;
-            copy.OnMoveToUpperInventoryGrid = pos => LeaveUpwards(gui, pos);
-            copy.OnMoveToLowerInventoryGrid = null;
-            grid = copy;
-        }
-
-        /// <summary>The copy's counterpart of something in the game's chest panel, found by its path.</summary>
-        private static Transform Twin(Transform original, Transform copy, Transform part) {
-            if (part == null || part == original || !part.IsChildOf(original)) { return null; }
-            List<string> path = new List<string>();
-            for (Transform t = part; t != null && t != original; t = t.parent) { path.Insert(0, t.name); }
-            return copy.Find(string.Join("/", path.ToArray()));
-        }
-
-        private static void HideTwin(InventoryGui gui, GameObject copy, Transform part) {
-            Transform twin = Twin(gui.m_container, copy.transform, part);
-            if (twin != null) { twin.gameObject.SetActive(false); }
-        }
-
-        private static TMP_Text CloneLabel(TMP_Text template, string name, Vector2 anchor, Vector2 position, TextAlignmentOptions alignment) {
-            GameObject go = Object.Instantiate(template.gameObject, template.transform.parent, false);
-            go.name = name;
-            go.SetActive(true);
-            TMP_Text text = go.GetComponent<TMP_Text>();
-            DetachFromLocalization(text);
-            RectTransform rect = text.rectTransform;
-            rect.anchorMin = anchor;
-            rect.anchorMax = anchor;
-            rect.pivot = new Vector2(anchor.x, 0.5f);
-            rect.anchoredPosition = position;
-            rect.sizeDelta = new Vector2(150f, rect.sizeDelta.y);
-            text.alignment = alignment;
-            text.enableAutoSizing = true;
-            text.fontSizeMin = 10f;
-            text.fontSizeMax = 16f;
-            text.text = "";
-            return text;
-        }
-
-        // The game localizes labels that still read "$..." and caches them, and re-applies its cache over
-        // whatever was written since (see DepositAll.DetachFromLocalization).
-        private static void DetachFromLocalization(TMP_Text text) {
-            if (text == null) { return; }
-            if (text.text != null && text.text.Contains("$")) { text.text = ""; }
-            Localization.instance?.RemoveTextFromCache(text);
-        }
-
-        // Kept as the game's own field type, not TMP's: GuiInputField hides ActivateInputField with a version
-        // that opens the Steam virtual keyboard on a Deck or in Big Picture, and only a call through this
-        // type reaches it.
-        private static GuiInputField CloneSearch(GameObject copy, TMP_Text title) {
-            GuiInputField template = Hud.instance != null && Hud.instance.m_buildUi != null ? Hud.instance.m_buildUi.m_searchField : null;
-            if (template == null) {
-                Logger.LogWarning("[Seeking Table] the build menu has no search box to copy; the table's list cannot be searched.");
-                return null;
-            }
-
-            GameObject go = Object.Instantiate(template.gameObject, copy.transform, false);
-            go.name = "DA_SeekSearch";
-            go.SetActive(true);
-            GuiInputField field = go.GetComponent<GuiInputField>();
-
-            // Listeners set up in the editor are copied; the build menu's own, added in code, are not. Only
-            // ours are wanted. The input block is not driven from here (see BlockInput).
-            Silence(field.onValueChanged);
-            Silence(field.onEndEdit);
-            Silence(field.onSubmit);
-            Silence(field.onSelect);
-            Silence(field.onDeselect);
-            field.onValueChanged.AddListener(_ => shownDirty = true);
-            field.SetTextWithoutNotify("");
-
-            if (field.placeholder is TMP_Text placeholder) {
-                DetachFromLocalization(placeholder);
-                placeholder.text = Localization.instance.Localize(SeekingSearch.EnchantSearchAvailable ? "$DA_seek_search_enchant" : "$DA_seek_search");
-            }
-            foreach (TMP_Text text in go.GetComponentsInChildren<TMP_Text>(includeInactive: true)) {
-                if (text != field.placeholder && text != field.textComponent) { DetachFromLocalization(text); }
-            }
-
-            RectTransform rect = (RectTransform)go.transform;
-            rect.anchorMin = new Vector2(0.5f, 1f);
-            rect.anchorMax = new Vector2(0.5f, 1f);
-            rect.pivot = new Vector2(0.5f, 0.5f);
-            rect.anchoredPosition = new Vector2(0f, title != null ? title.rectTransform.anchoredPosition.y : -19f);
-            rect.sizeDelta = new Vector2(230f, Mathf.Max(26f, rect.sizeDelta.y));
-            rect.localScale = Vector3.one;
-            go.transform.SetAsLastSibling();
-            return field;
-        }
-
-        private static void Silence<T>(UnityEvent<T> unityEvent) {
-            if (unityEvent == null) { return; }
-            for (int i = 0; i < unityEvent.GetPersistentEventCount(); ++i) {
-                unityEvent.SetPersistentListenerState(i, UnityEventCallState.Off);
-            }
-        }
-
-        private static void BuildTabs(InventoryGui gui, GameObject copy) {
-            Tabs.Clear();
-            if (gui.m_playerGrid == null || gui.m_playerGrid.m_elementPrefab == null) { return; }
-
-            GameObject root = new GameObject("DA_SeekTabs", typeof(RectTransform));
-            root.layer = copy.layer;
-            RectTransform column = (RectTransform)root.transform;
-            column.SetParent(copy.transform, false);
-            column.anchorMin = new Vector2(1f, 1f);
-            column.anchorMax = new Vector2(1f, 1f);
-            column.pivot = new Vector2(0f, 1f);
-            column.anchoredPosition = new Vector2(TabGap, 0f);
-
-            float y = 0f;
-            float switchPlate = FilterPopupUI.PadY * 2f + FilterPopupUI.SwitchHeight;
-
-            RectTransform allPlate = FilterPopupUI.Plate(gui, column, ref y, switchPlate);
-            AddTab(FilterPopupUI.TextCell<TabCell>(gui, allPlate, FilterPopupUI.PadY, FilterPopupUI.SwitchHeight,
-                Localization.instance.Localize("$DA_seek_tab_all")), TabKind.All, null);
-
-            DepositCategory[] categories = DepositCategories.All;
-            RectTransform iconPlate = FilterPopupUI.IconPlate(gui, column, ref y, categories.Length);
-            for (int i = 0; i < categories.Length; ++i) {
-                AddTab(FilterPopupUI.IconCell<TabCell>(gui, iconPlate, i, DepositCategories.IconOf(categories[i])), TabKind.Category, categories[i]);
-            }
-
-            if (EpicLootIntegration.Active) {
-                RectTransform magicPlate = FilterPopupUI.Plate(gui, column, ref y, switchPlate);
-                AddTab(FilterPopupUI.TextCell<TabCell>(gui, magicPlate, FilterPopupUI.PadY, FilterPopupUI.SwitchHeight,
-                    Localization.instance.Localize("$DA_seek_tab_enchanted")), TabKind.Enchanted, null);
-            }
-            FilterPopupUI.Finish(column, y);
-        }
-
-        private static void AddTab(TabCell cell, TabKind kind, DepositCategory category) {
-            cell.Kind = kind;
-            cell.Category = category;
-            FilterPopupUI.OnClick(cell, () => SelectTab(cell));
-            Tabs.Add(cell);
         }
 
         // ---- controller focus ---------------------------------------------------------------

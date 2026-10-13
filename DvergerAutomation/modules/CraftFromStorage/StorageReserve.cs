@@ -14,7 +14,7 @@ namespace DvergerAutomation {
     ///
     /// Whatever is not spent goes back. Each item remembers when something last wanted it, and one that
     /// has gone unwanted for <see cref="GraceSeconds"/> is returned to the chest it came from, or failing
-    /// that to the player's pack, or failing that to the ground at their feet. That one rule covers a
+    /// that to the player (see <see cref="PlayerDelivery"/>). That one rule covers a
     /// cancelled craft, a closed panel, a changed recipe and a put-away Hammer without a hook on any of
     /// them.
     ///
@@ -78,7 +78,7 @@ namespace DvergerAutomation {
             if (Entries.Count == 0) { return 0; }
             int total = 0;
             foreach (Entry entry in Entries) {
-                if (CraftFromStoragePatches.Matches(entry.Item, name, -1)) { total += entry.Item.m_stack; }
+                if (ItemIdentity.Matches(entry.Item, name, -1)) { total += entry.Item.m_stack; }
             }
             return total;
         }
@@ -88,7 +88,7 @@ namespace DvergerAutomation {
             int spent = 0;
             for (int i = Entries.Count - 1; i >= 0 && amount > 0; --i) {
                 ItemDrop.ItemData item = Entries[i].Item;
-                if (!CraftFromStoragePatches.Matches(item, name, quality)) { continue; }
+                if (!ItemIdentity.Matches(item, name, quality)) { continue; }
                 int take = Mathf.Min(item.m_stack, amount);
                 item.m_stack -= take;
                 amount -= take;
@@ -103,8 +103,8 @@ namespace DvergerAutomation {
         /// <summary>
         /// Checks, before anything is spent, that everything the storage pool has to supply is either in
         /// chests this client owns or already held here - and sets about fetching whatever is not. Closed
-        /// chests are asked for whole, as before; open ones, vehicles in use and chests whose owner will
-        /// not let go are asked for just the materials. Cheap to call every frame while an action waits:
+        /// chests are asked for whole; open ones, vehicles in use, machines' stores and chests whose owner
+        /// will not let go are asked for just the materials. Cheap to call every frame while an action waits:
         /// nothing is asked for twice.
         /// </summary>
         internal static Readiness Ensure(List<Container> pool, List<KeyValuePair<string, int>> shortfalls) {
@@ -146,7 +146,7 @@ namespace DvergerAutomation {
                 if (container == null || container.m_nview == null || !container.m_nview.IsValid()) { continue; }
                 // Its stock already counts as ready.
                 if (container.m_nview.IsOwner()) { continue; }
-                int held = Held(container, name);
+                int held = InventoryOps.CountMatching(container.GetInventory(), name, -1);
                 if (held <= 0) { continue; }
 
                 // Handing a closed chest over whole is the cheaper way: everything after the first unit is
@@ -177,7 +177,7 @@ namespace DvergerAutomation {
                 Logger.LogInfo($"[Storage] asking the owner of {container.name} for {amount} {name}.");
             }
             StorageRpc.Send(container, StorageRpc.Op.Take,
-                args => StorageOps.WriteTake(args, name, -1, amount),
+                args => StorageOps.WriteTake(args, name, amount),
                 (status, reply, late) => OnTaken(token, chest, status, reply));
         }
 
@@ -222,16 +222,6 @@ namespace DvergerAutomation {
             return false;
         }
 
-        private static int Held(Container container, string name) {
-            Inventory inv = container.GetInventory();
-            if (inv == null) { return 0; }
-            int held = 0;
-            foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
-                if (CraftFromStoragePatches.Matches(item, name, -1)) { held += item.m_stack; }
-            }
-            return held;
-        }
-
         // ---- giving back ------------------------------------------------------------
 
         /// <summary>Returns what nothing has wanted for a while. Run every frame; does its work a few times a second.</summary>
@@ -270,7 +260,7 @@ namespace DvergerAutomation {
         }
 
         private static void GiveBack(ZDOID source, List<Entry> group) {
-            Container container = StorageOwnership.FindStorage(source);
+            Container container = StorageScan.FindStorage(source);
             if (container == null) {
                 ToPlayer(group);
                 return;
@@ -323,43 +313,7 @@ namespace DvergerAutomation {
         }
 
         private static void ToPlayer(List<Entry> group) {
-            if (group.Count == 0) { return; }
-            Player player = Player.m_localPlayer;
-            if (player == null) {
-                // Dead or between worlds: no pack to put them in and no feet to drop them at. Held until
-                // there is.
-                float now = Time.time;
-                foreach (Entry entry in group) {
-                    entry.LastWanted = now;
-                    Entries.Add(entry);
-                }
-                return;
-            }
-            foreach (Entry entry in group) { GiveToPlayer(player, entry.Item); }
-        }
-
-        private static void GiveToPlayer(Player player, ItemDrop.ItemData item) {
-            int rest = item.m_stack - AutoStore.AddMeasured(player.GetInventory(), item, item.m_stack);
-            if (rest <= 0) { return; }
-            if (item.m_dropPrefab == null) {
-                Logger.LogWarning($"[Storage] {rest} {item.m_shared.m_name} had nowhere to go back to and could not be dropped.");
-                return;
-            }
-            ItemDrop.DropItem(item, rest, player.transform.position + player.transform.forward + Vector3.up, Quaternion.identity);
-        }
-
-        /// <summary>
-        /// Gives the player an item that has nowhere else to go back to: into their pack, overflow at
-        /// their feet. With no player to give it to it is kept here until there is one.
-        /// </summary>
-        internal static void HandToPlayer(ItemDrop.ItemData item) {
-            Player player = Player.m_localPlayer;
-            if (player != null) {
-                GiveToPlayer(player, item);
-                return;
-            }
-            // No chest to go back to, so the refund pass hands it straight to the player once one exists.
-            Entries.Add(new Entry { Source = ZDOID.None, Item = item, LastWanted = Time.time });
+            foreach (Entry entry in group) { PlayerDelivery.Give(entry.Item); }
         }
 
         /// <summary>
@@ -368,7 +322,7 @@ namespace DvergerAutomation {
         /// </summary>
         internal static void FlushToPlayer(Player player) {
             if (Entries.Count == 0 || player == null) { return; }
-            foreach (Entry entry in Entries) { GiveToPlayer(player, entry.Item); }
+            foreach (Entry entry in Entries) { PlayerDelivery.Give(entry.Item); }
             Entries.Clear();
         }
     }

@@ -23,17 +23,6 @@ namespace DvergerAutomation {
 
         // ---- shared helpers -------------------------------------------------
 
-        // Shared predicate for the by-name material paths: vanilla's own name/quality/world-level test,
-        // plus Epic Loot's magic items, which share m_shared.m_name with their mundane counterpart and
-        // must never be spent as one.
-        internal static bool Matches(ItemDrop.ItemData item, string name, int quality) {
-            if (item == null || item.m_shared == null) { return false; }
-            if (item.m_shared.m_name != name) { return false; }
-            if (quality >= 0 && item.m_quality != quality) { return false; }
-            if (item.m_worldLevel < Game.m_worldLevel) { return false; }
-            return !EpicLootIntegration.IsProtectedItem(item);
-        }
-
         /// <summary>
         /// Whether a recipe ingredient is charged at this station, mirroring vanilla's filter in
         /// <c>Player.HaveRequirementItems</c> / <c>ConsumeResources</c>. Since 1.0 a recipe can carry upgrader
@@ -43,32 +32,6 @@ namespace DvergerAutomation {
         internal static bool AppliesAtStation(Piece.Requirement requirement, CraftingStation station) {
             if (requirement == null || requirement.m_resItem == null) { return false; }
             return station != null ? station.m_upgrader == requirement.m_upgraderResource : !requirement.m_upgraderResource;
-        }
-
-        /// <summary>
-        /// True when a chest must not change hands because someone has it open. Taking ownership out from
-        /// under them blanks their container panel, and their <c>m_inUse</c> can then never clear, because
-        /// <c>Container.SetInUse</c> is itself owner-gated - and a stuck <c>m_inUse</c> blocks
-        /// <c>Container.Load</c>, so their copy of the chest stops updating for good. <c>IsInUse()</c> only
-        /// reports the *local* field, so a remote player's session is visible only through the flag the
-        /// owner mirrors into the ZDO. The owner also refuses to hand over a chest that is open (see
-        /// <see cref="StorageOwnership"/>), so this is the requester not bothering to ask.
-        ///
-        /// A boat's hold or a cart's bed is also busy while someone else is aboard, pulling or riding it:
-        /// the hold shares the vehicle's ZDO, so taking it takes the whole vehicle (see
-        /// <see cref="VehicleStorage.InUse"/>).
-        ///
-        /// The Hopper and Epic Loot's table leave a busy chest alone altogether. Crafting and building do
-        /// not: they count its stock, and have its owner take the materials out for them (see
-        /// <see cref="StorageReserve"/>). Auto-store likewise sends a chest that is open in someone
-        /// else's panel its items through the owner.
-        /// </summary>
-        internal static bool IsBusy(Container container) {
-            if (container.IsInUse()) { return true; }
-            ZNetView nview = container.m_nview;
-            if (nview == null || !nview.IsValid()) { return true; }
-            if (nview.GetZDO().GetInt(ZDOVars.s_inUse) == 1) { return true; }
-            return VehicleStorage.InUse(container);
         }
 
         /// <summary>
@@ -106,40 +69,22 @@ namespace DvergerAutomation {
             foreach (Container container in pool) {
                 if (amount <= 0) { break; }
                 if (container == null) { continue; }
+                // Read off this client's copy before asking for the chest: one that holds none of it is not
+                // worth a handoff.
                 Inventory inv = container.GetInventory();
-                if (inv == null || !Holds(inv, name, itemQuality)) { continue; }
-                // Reloads the grid too, so the items walked below are the chest's current ones.
+                if (InventoryOps.CountMatching(inv, name, itemQuality) <= 0) { continue; }
+                // Reloads the grid too, so the items taken below are the chest's current ones.
                 if (!StorageOwnership.TryAcquireForSpend(container)) { continue; }
 
-                // Removed per instance rather than by name so protected items can be stepped over; vanilla's
-                // Inventory.RemoveItem(string, ...) would happily eat them. GetAllItems hands back the live
-                // backing list and emptied stacks drop out of it, so walk it backwards.
-                int before = removed;
-                List<ItemDrop.ItemData> items = inv.GetAllItems();
-                for (int i = items.Count - 1; i >= 0 && amount > 0; --i) {
-                    ItemDrop.ItemData item = items[i];
-                    if (!Matches(item, name, itemQuality)) { continue; }
-
-                    int take = Mathf.Min(item.m_stack, amount);
-                    inv.RemoveItem(item, take);
-                    amount -= take;
-                    removed += take;
-                }
+                int taken = InventoryOps.Take(inv, name, itemQuality, amount);
+                amount -= taken;
+                removed += taken;
                 // It may be the chest this player has open, with one of those stacks on the cursor.
-                if (removed > before) { StorageOps.GuardOwnerGui(container); }
+                if (taken > 0) { StorageOps.GuardOwnerGui(container); }
             }
-            // Chest contents just changed: the frame-memoized aggregate is now stale.
+            // Chest contents just changed: the frame-memoized counts have to look again.
             if (removed > 0) { ContainerNetwork.InvalidateItemCounts(); }
             return removed;
-        }
-
-        // Read off this client's copy, before asking for the chest: one that holds none of it is not worth
-        // a handoff.
-        private static bool Holds(Inventory inv, string name, int itemQuality) {
-            foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
-                if (Matches(item, name, itemQuality)) { return true; }
-            }
-            return false;
         }
 
         /// <summary>
@@ -165,117 +110,8 @@ namespace DvergerAutomation {
             CraftingStation station = player.GetCurrentCraftingStation();
             int quality = gui.m_craftUpgradeItem == null ? 1 : gui.m_craftUpgradeItem.m_quality + 1;
             int multiplier = gui.m_multiCrafting ? gui.m_multiCraftAmount : 1;
-            return StorageOwnership.MustWait(player, ContainerNetwork.GetContainersForStation(station), recipe.m_resources, station, quality, multiplier);
-        }
-    }
-
-    /// <summary>
-    /// Keeps a finished craft bar full while the craft's materials are still on their way from another
-    /// player's chest, instead of failing the craft and making the player start the bar again.
-    ///
-    /// <c>InventoryGui.UpdateRecipe</c> runs the bar: once it fills it calls <c>DoCrafting</c> and resets
-    /// the timer, whatever DoCrafting did. So when the craft has to wait, DoCrafting is skipped and the
-    /// timer is put back to where the frame found it. Vanilla then fills the bar and tries again on the
-    /// next frame, and the frame after, until the materials are in or patience runs out.
-    /// </summary>
-    internal static class CraftHold {
-        // A round trip to another player is a fraction of this. Longer means nobody is answering.
-        private const float Patience = 3f;
-
-        private static bool inUpdateRecipe;
-        private static float timerBefore;
-        private static int heldFrame = -1;
-        private static float since;
-
-        internal static void Enter(InventoryGui gui) {
-            inUpdateRecipe = true;
-            timerBefore = gui.m_craftTimer;
-        }
-
-        internal static void Exit(InventoryGui gui) {
-            inUpdateRecipe = false;
-            if (heldFrame == Time.frameCount) { gui.m_craftTimer = timerBefore; }
-        }
-
-        /// <summary>
-        /// Called when the craft has to wait: true while it should be held, false once it should be
-        /// given up on. Only a craft run from the bar can be held - anything else calling DoCrafting
-        /// has no timer to put back.
-        /// </summary>
-        internal static bool KeepWaiting() {
-            if (!inUpdateRecipe) { return false; }
-            // Not carrying on from the frame before, so this is a new wait.
-            if (heldFrame != Time.frameCount - 1) { since = Time.time; }
-            if (Time.time - since > Patience) { return false; }
-            heldFrame = Time.frameCount;
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// Finishes a Hammer placement that had to wait for materials from another player's chest.
-    ///
-    /// The click that could not be paid for is turned down, as it has to be - vanilla places the piece
-    /// before it spends. Once the materials are in, the click is pressed again on the player's behalf by
-    /// setting the time vanilla's own buffered-click check reads, so the placement goes through vanilla's
-    /// whole path: stamina, the ghost's validity at that moment, durability, skill. Only for the piece
-    /// that was clicked, only while it is still selected, and only for a short while.
-    /// </summary>
-    internal static class PlaceRetry {
-        private const float Patience = 3f;
-
-        private static Piece piece;
-        private static float until;
-        // The frame the gate in front of TryPlacePiece last turned this piece down, and the frame a press
-        // was last made for it.
-        private static int blockedFrame = -1;
-        private static int pressedFrame = -1;
-
-        /// <summary>The gate turned a placement down for want of materials that are on their way.</summary>
-        internal static void Arm(Piece wanted) {
-            blockedFrame = Time.frameCount;
-            if (piece == wanted) { return; }
-            piece = wanted;
-            until = Time.time + Patience;
-            pressedFrame = -1;
-        }
-
-        internal static void Disarm() {
-            piece = null;
-            pressedFrame = -1;
-        }
-
-        /// <summary>Run ahead of <c>Player.UpdatePlacement</c>, which is what reads the press.</summary>
-        internal static void Tick(Player player) {
-            if (piece == null) { return; }
-            if (!player.InPlaceMode() || player.GetSelectedPiece() != piece) {
-                Disarm();
-                return;
-            }
-
-            // Vanilla sets the time far into the past when it takes a press. One it took without coming
-            // back to the gate was stopped by something else - no stamina, a ghost that is no longer valid -
-            // and vanilla has said so; pressing again would only repeat it every frame.
-            if (pressedFrame >= 0 && player.m_placePressedTime < 0f) {
-                if (blockedFrame != pressedFrame) {
-                    Disarm();
-                    return;
-                }
-                pressedFrame = -1;
-            }
-
-            if (Time.time > until) {
-                Disarm();
-                player.Message(MessageHud.MessageType.Center, "$DA_storage_waiting");
-                return;
-            }
-            List<Container> pool = ContainerNetwork.GetContainersNearPoint(player.transform.position);
-            if (StorageOwnership.MustWait(player, pool, piece.m_resources, null, 0, 1)) { return; }
-
-            // Vanilla takes the press on the first frame its placement delay allows; until then it is
-            // pressed afresh each frame. The gate disarms this when it lets the piece through.
-            player.m_placePressedTime = Time.time;
-            pressedFrame = Time.frameCount;
+            return StorageOwnership.CheckStorage(player, ContainerNetwork.GetContainersForStation(station), recipe.m_resources, station, quality, multiplier)
+                == StorageReserve.Readiness.Pending;
         }
     }
 
@@ -287,13 +123,16 @@ namespace DvergerAutomation {
         private static void Postfix(Player __instance, ref bool __result, Recipe piece, bool discover, int qualityLevel, int amount) {
             if (__result || discover) { return; }
             if (__instance == null || __instance != Player.m_localPlayer) { return; }
+            // A one-of-these recipe is paid from the player's own pack only: vanilla's Recipe.GetAmount looks
+            // the ingredient up there (GetFirstRequiredItem) and throws when it is not found, so one read as
+            // craftable on chest stock would crash the craft button.
+            if (piece.m_requireOnlyOneIngredient) { return; }
 
             CraftingStation station = __instance.GetCurrentCraftingStation();
             if (station == null) { return; }
             List<Container> pool = ContainerNetwork.GetContainersForStation(station);
             if (pool.Count == 0) { return; }
 
-            bool requireOne = piece.m_requireOnlyOneIngredient;
             foreach (Piece.Requirement resource in piece.m_resources) {
                 if (!CraftFromStoragePatches.AppliesAtStation(resource, station)) { continue; }
                 string name = resource.m_resItem.m_itemData.m_shared.m_name;
@@ -306,15 +145,10 @@ namespace DvergerAutomation {
                     if (count > playerBest) { playerBest = count; }
                 }
                 int total = playerBest + CraftFromStoragePatches.CountAvailable(pool, name);
-
-                if (requireOne) {
-                    if (total >= needed) { __result = true; return; }
-                } else if (total < needed) {
-                    return;
-                }
+                if (total < needed) { return; }
             }
 
-            __result = !requireOne;
+            __result = true;
         }
     }
 
@@ -356,6 +190,18 @@ namespace DvergerAutomation {
 
     [HarmonyPatch(typeof(InventoryGui), nameof(InventoryGui.SetupRequirement))]
     internal static class InventoryGui_SetupRequirement_Patch {
+        // Each row's amount label, found once: the rows are pooled UI objects, redrawn every frame.
+        private static readonly Dictionary<Transform, TMP_Text> AmountTexts = new Dictionary<Transform, TMP_Text>();
+
+        // The "+N" and tooltip lines by N. A count changes far less often than the rows are drawn.
+        private static readonly Dictionary<int, string> Suffixes = new Dictionary<int, string>();
+        private static readonly Dictionary<int, string> TooltipLines = new Dictionary<int, string>();
+
+        static InventoryGui_SetupRequirement_Patch() {
+            // The tooltip line is worded in the player's language.
+            Localization.OnLanguageChange += TooltipLines.Clear;
+        }
+
         // Low: mods that annotate this row with the player's own count (MyLittleUI) run at Normal and
         // int.TryParse the text before touching it, so the storage figure has to land after theirs.
         [HarmonyPriority(Priority.Low)]
@@ -371,8 +217,7 @@ namespace DvergerAutomation {
             int stored = CraftFromStoragePatches.CountAvailable(pool, name);
             if (stored <= 0) { return; }
 
-            Transform amountTransform = elementRoot.Find("res_amount");
-            TMP_Text amountText = amountTransform != null ? amountTransform.GetComponent<TMP_Text>() : null;
+            TMP_Text amountText = AmountText(elementRoot);
             if (amountText == null) { return; }
 
             // Vanilla judged the red flash on the player's own count alone. Storage covering the rest
@@ -383,14 +228,32 @@ namespace DvergerAutomation {
             }
 
             if (!ValConfig.ShowStorageCounts.Value) { return; }
-            amountText.text += " <color=" + CraftFromStoragePatches.StorageCountColor + ">+" + stored + "</color>";
+            amountText.text += Cached(Suffixes, stored, n => " <color=" + CraftFromStoragePatches.StorageCountColor + ">+" + n + "</color>");
 
             // Vanilla resets the tooltip to the bare item name every draw, so this never accumulates.
             UITooltip tooltip = elementRoot.GetComponent<UITooltip>();
             if (tooltip != null) {
-                tooltip.m_text += "\n<color=" + CraftFromStoragePatches.StorageCountColor + ">"
-                    + Localization.instance.Localize("$DA_storage_count", stored.ToString()) + "</color>";
+                tooltip.m_text += Cached(TooltipLines, stored, n => "\n<color=" + CraftFromStoragePatches.StorageCountColor + ">"
+                    + Localization.instance.Localize("$DA_storage_count", n.ToString()) + "</color>");
             }
+        }
+
+        private static TMP_Text AmountText(Transform elementRoot) {
+            if (AmountTexts.TryGetValue(elementRoot, out TMP_Text text) && text != null) { return text; }
+            if (AmountTexts.Count > 64) { AmountTexts.Clear(); }
+            Transform amountTransform = elementRoot.Find("res_amount");
+            text = amountTransform != null ? amountTransform.GetComponent<TMP_Text>() : null;
+            AmountTexts[elementRoot] = text;
+            return text;
+        }
+
+        private static string Cached(Dictionary<int, string> cache, int stored, System.Func<int, string> make) {
+            if (cache.TryGetValue(stored, out string line)) { return line; }
+            // A language switch or a long session of changing counts: start over rather than grow.
+            if (cache.Count > 256) { cache.Clear(); }
+            line = make(stored);
+            cache[stored] = line;
+            return line;
         }
     }
 
@@ -534,12 +397,10 @@ namespace DvergerAutomation {
         private static void Prefix(Player __instance, Piece.Requirement[] requirements, int qualityLevel, int itemQuality, int multiplier) {
             if (__instance == null || __instance != Player.m_localPlayer) { return; }
 
-            CraftingStation station = __instance.GetCurrentCraftingStation();
-            List<Container> pool = station != null
-                ? ContainerNetwork.GetContainersForStation(station)
-                : ContainerNetwork.GetContainersNearPoint(__instance.transform.position);
+            List<Container> pool = ContainerNetwork.PoolFor(__instance);
             if (pool.Count == 0) { return; }
 
+            CraftingStation station = __instance.GetCurrentCraftingStation();
             foreach (KeyValuePair<string, int> shortfall in CraftFromStoragePatches.Shortfalls(__instance, requirements, station, qualityLevel, itemQuality, multiplier)) {
                 // What was fetched for this action first - it has already left its chest - then the chests
                 // this client owns.

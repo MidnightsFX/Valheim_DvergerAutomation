@@ -51,6 +51,39 @@ namespace DvergerAutomation {
             return a.m_shared.m_maxStackSize > 1 ? SameStack(a, b) : SameExact(a, b);
         }
 
+        /// <summary>
+        /// Whether an item is the named material for the by-name crafting paths: vanilla's own name, quality
+        /// and world-level test, plus Epic Loot's magic items, which share <c>m_shared.m_name</c> with their
+        /// mundane counterpart and must never be spent as one. A negative quality matches any.
+        /// </summary>
+        internal static bool Matches(ItemDrop.ItemData item, string name, int quality) {
+            if (item == null || item.m_shared == null) { return false; }
+            if (item.m_shared.m_name != name) { return false; }
+            if (quality >= 0 && item.m_quality != quality) { return false; }
+            if (item.m_worldLevel < Game.m_worldLevel) { return false; }
+            return !EpicLootIntegration.IsProtectedItem(item);
+        }
+
+        /// <summary>
+        /// Whether the item can be sent to another client: it is rebuilt there from its drop prefab, so one
+        /// without would leave here and arrive nowhere.
+        /// </summary>
+        internal static bool CanTravel(ItemDrop.ItemData item) {
+            return item != null && item.m_dropPrefab != null;
+        }
+
+        /// <summary>
+        /// Appends an item's custom data - where Epic Loot keeps an enchantment - to <paramref name="into"/>
+        /// in key order, so two items carrying the same data write the same text.
+        /// </summary>
+        internal static void AppendCustomData(System.Text.StringBuilder into, ItemDrop.ItemData item) {
+            Dictionary<string, string> data = item.m_customData;
+            if (data == null || data.Count == 0) { return; }
+            List<string> keys = new List<string>(data.Keys);
+            keys.Sort(System.StringComparer.Ordinal);
+            foreach (string key in keys) { into.Append('|').Append(key).Append('=').Append(data[key]); }
+        }
+
         private static string PrefabName(ItemDrop.ItemData item) {
             return item.m_dropPrefab != null ? item.m_dropPrefab.name : "";
         }

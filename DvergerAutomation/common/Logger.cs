@@ -1,4 +1,4 @@
-﻿using BepInEx.Logging;
+using BepInEx.Logging;
 using System;
 
 
@@ -6,24 +6,13 @@ namespace DvergerAutomation {
     internal class Logger {
         public static LogLevel Level = LogLevel.Info;
 
+        /// <summary>SettingChanged handler for the debug-mode entry.</summary>
         public static void EnableDebugLogging(object sender, EventArgs e) {
-            CheckEnableDebugLogging();
-        }
-
-        public static void CheckEnableDebugLogging() {
-            if (ValConfig.EnableDebugMode.Value) {
-                Level = LogLevel.Debug;
-            } else {
-                Level = LogLevel.Info;
-            }
+            SetDebugLogging(ValConfig.EnableDebugMode.Value);
         }
 
         public static void SetDebugLogging(bool state) {
-            if (state) {
-                Level = LogLevel.Debug;
-            } else {
-                Level = LogLevel.Info;
-            }
+            Level = state ? LogLevel.Debug : LogLevel.Info;
         }
 
         public static void LogDebug(string message) {

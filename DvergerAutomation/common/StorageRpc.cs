@@ -41,9 +41,6 @@ namespace DvergerAutomation {
             ChestMove = 5,
             // The Seeking Table fetching one particular item (StorageOps).
             TakeExact = 6,
-            // Feeding an item into a Grinder's queue, and taking the last one back out (GrinderOps).
-            GrinderFeed = 7,
-            GrinderTakeBack = 8,
         }
 
         internal enum Status : byte {
@@ -66,7 +63,7 @@ namespace DvergerAutomation {
         }
 
         /// <summary>Carries out a request on a container this client owns, writing its answer into <paramref name="reply"/>.</summary>
-        internal delegate Status OwnerHandler(Container container, long sender, ZPackage args, ZPackage reply);
+        internal delegate Status OwnerHandler(Container container, ZPackage args, ZPackage reply);
 
         /// <summary>
         /// Receives a request's outcome. <paramref name="reply"/> is null for <see cref="Status.Lost"/>.
@@ -97,20 +94,15 @@ namespace DvergerAutomation {
         private static readonly List<Pending> PendingScratch = new List<Pending>();
         private static readonly List<DelayedReply> Delayed = new List<DelayedReply>();
 
-        // ZRoutedRpc is rebuilt with every session, and registering twice on the same one throws.
-        private static ZRoutedRpc registeredOn;
         private static int nextId;
 
         internal static void Register(Op op, OwnerHandler handler) {
             Handlers[op] = handler;
         }
 
-        internal static void RegisterRpc() {
-            ZRoutedRpc rpc = ZRoutedRpc.instance;
-            if (rpc == null || rpc == registeredOn) { return; }
+        internal static void RegisterRpc(ZRoutedRpc rpc) {
             rpc.Register<ZDOID, ZPackage>(OpRpc, RPC_StorageOp);
             rpc.Register<ZDOID, ZPackage>(ResultRpc, RPC_StorageOpResult);
-            registeredOn = rpc;
             PendingById.Clear();
             Delayed.Clear();
         }
@@ -143,7 +135,7 @@ namespace DvergerAutomation {
             if (zdo.IsOwner()) {
                 ZPackage local = new ZPackage();
                 args.SetPos(0);
-                Status status = Run(op, container, ZDOMan.GetSessionID(), AutomationHub.LocalPlayerId(), args, ref local);
+                Status status = Run(op, container, StorageScan.LocalPlayerId(), args, ref local);
                 local.SetPos(0);
                 onResult(status, local, false);
                 return;
@@ -167,7 +159,7 @@ namespace DvergerAutomation {
             ZPackage request = new ZPackage();
             request.Write(pending.Id);
             request.Write((byte)op);
-            request.Write(AutomationHub.LocalPlayerId());
+            request.Write(StorageScan.LocalPlayerId());
             request.Write(args);
             ZRoutedRpc.instance.InvokeRoutedRPC(pending.Target, OpRpc, zdo.m_uid, request);
         }
@@ -237,7 +229,7 @@ namespace DvergerAutomation {
                 ZPackage args = request.ReadPackage();
 
                 status = Resolve(id, playerId, out Container container);
-                if (status == Status.Ok) { status = Run(op, container, sender, playerId, args, ref body); }
+                if (status == Status.Ok) { status = Run(op, container, playerId, args, ref body); }
             } catch (Exception ex) {
                 Logger.LogError($"[Storage] reading a storage request failed: {ex}");
                 status = Status.Error;
@@ -254,16 +246,16 @@ namespace DvergerAutomation {
             if (!zdo.IsOwner()) { return Status.NotOwner; }
             GameObject root = ZNetScene.instance.FindInstance(id);
             if (root == null) { return Status.NotFound; }
-            return StorageOwnership.TryResolveStorage(root, playerId, out container) ? Status.Ok : Status.Refused;
+            return StorageScan.TryResolveStorage(root, playerId, out container) ? Status.Ok : Status.Refused;
         }
 
         // A handler that throws has its half-written answer thrown away with it: the requester is told
         // Error and restores from its own copy.
-        private static Status Run(Op op, Container container, long sender, long playerId, ZPackage args, ref ZPackage reply) {
+        private static Status Run(Op op, Container container, long playerId, ZPackage args, ref ZPackage reply) {
             if (!Handlers.TryGetValue(op, out OwnerHandler handler)) { return Status.Error; }
             if (!container.CheckAccess(playerId)) { return Status.Refused; }
             try {
-                return handler(container, sender, args, reply);
+                return handler(container, args, reply);
             } catch (Exception ex) {
                 Logger.LogError($"[Storage] carrying out {op} on {container.name} failed: {ex}");
                 reply = new ZPackage();
@@ -305,6 +297,30 @@ namespace DvergerAutomation {
         }
     }
 
+    // Every session gets a new ZRoutedRpc, and everything this mod sends over it is registered on it here,
+    // once: registering twice on the same one throws. Whatever was held or asked for in the last session
+    // means nothing in this one.
+    [HarmonyPatch(typeof(Game), "Start")]
+    internal static class Game_Start_Session_Patch {
+        private static ZRoutedRpc registeredOn;
+
+        private static void Postfix() {
+            ZRoutedRpc rpc = ZRoutedRpc.instance;
+            if (rpc == null || rpc == registeredOn) { return; }
+            registeredOn = rpc;
+            StorageRpc.RegisterRpc(rpc);
+            StorageOwnership.RegisterRpc(rpc);
+            HopperNetwork.RegisterRpc(rpc);
+            LighterNetwork.RegisterRpc(rpc);
+            GrinderOps.RegisterRpc(rpc);
+            StorageOps.Register();
+            SharedChestOps.Register();
+            StorageReserve.Reset();
+            SharedChestRequests.Reset();
+            PlayerDelivery.Reset();
+        }
+    }
+
     // Game.Update rather than the local player's: requests still have to be settled, and what they
     // brought back refunded, while the player is dead and there is no Player to tick from.
     [HarmonyPatch(typeof(Game), nameof(Game.Update))]
@@ -314,6 +330,7 @@ namespace DvergerAutomation {
                 StorageRpc.Tick();
                 StorageReserve.Tick();
                 SharedChestRequests.Tick();
+                PlayerDelivery.Tick();
             } catch (Exception ex) {
                 Logger.LogError($"[Storage] settling storage requests failed: {ex}");
             }

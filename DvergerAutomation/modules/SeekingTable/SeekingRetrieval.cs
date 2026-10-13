@@ -12,6 +12,11 @@ namespace DvergerAutomation {
     ///
     /// What comes back goes into the pack, overflow at the player's feet - including a reply that turns
     /// up after the request was given up on, since by then the items have already left the chest.
+    ///
+    /// Items lying on the ground are taken the way vanilla picks one up: the item is asked of whoever
+    /// simulates it (<c>ItemDrop.RequestOwn</c>, which its owner answers by handing it over), and once it
+    /// is this client's, the units are taken off it and it is removed or shrunk. Unlike a vanilla pickup,
+    /// part of a pile can be taken.
     /// </summary>
     internal static class SeekingRetrieval {
         // One take's worth of units still to arrive, so a second click is not offered room the first has
@@ -34,7 +39,7 @@ namespace DvergerAutomation {
             if (player == null) { return 0; }
             int max = Mathf.Max(1, item.m_shared.m_maxStackSize);
             Inventory inv = player.GetInventory();
-            int room = AutoStore.FreeSpaceFor(inv, item) - EmptySlotRowCells(inv) * max;
+            int room = InventoryOps.FreeSpaceFor(inv, item) - EmptySlotRowCells(inv) * max;
             foreach (Delivery delivery in Deliveries) {
                 if (max > 1 && ItemIdentity.SameStack(delivery.Prototype, item)) {
                     room -= delivery.Amount;
@@ -70,8 +75,9 @@ namespace DvergerAutomation {
 
         /// <summary>
         /// Takes up to <paramref name="amount"/> units of <paramref name="entry"/>, clamped to what is there
-        /// and what the pack can hold. Chests this client owns are drawn from first, since they answer at
-        /// once, then the nearest.
+        /// and what the pack can hold. Anything on the ground goes first, nearest first: it is what the
+        /// player switched the ground on for, and unlike a chest it can despawn. Then chests this client
+        /// owns, since they answer at once, then the nearest.
         /// </summary>
         internal static void Take(SeekingTable table, SeekEntry entry, int amount) {
             Player player = Player.m_localPlayer;
@@ -84,11 +90,14 @@ namespace DvergerAutomation {
             amount = Mathf.Min(amount, Mathf.Min(entry.Total, room));
             if (amount <= 0) { return; }
 
+            Vector3 origin = table.transform.position;
+            int remaining = TakeFromGround(table, entry, amount, origin);
+
             // One request per chest: the owner finds every matching unit in it itself.
             ByChest.Clear();
             ChestOrder.Clear();
             foreach (SeekSource source in entry.Sources) {
-                if (source.Chest == null) { continue; }
+                if (source.Ground || source.Chest == null) { continue; }
                 if (!ByChest.TryGetValue(source.Chest, out List<SeekSource> list)) {
                     list = new List<SeekSource>();
                     ByChest[source.Chest] = list;
@@ -96,7 +105,6 @@ namespace DvergerAutomation {
                 }
                 list.Add(source);
             }
-            Vector3 origin = table.transform.position;
             ChestOrder.Sort((a, b) => {
                 bool ownsA = a.m_nview != null && a.m_nview.IsOwner();
                 bool ownsB = b.m_nview != null && b.m_nview.IsOwner();
@@ -104,14 +112,13 @@ namespace DvergerAutomation {
                 return (a.transform.position - origin).sqrMagnitude.CompareTo((b.transform.position - origin).sqrMagnitude);
             });
 
-            int remaining = amount;
             foreach (Container chest in ChestOrder) {
                 if (remaining <= 0) { break; }
                 List<SeekingIndex.InFlight> held = new List<SeekingIndex.InFlight>();
                 int fromChest = 0;
                 SeekSource first = default;
                 foreach (SeekSource source in ByChest[chest]) {
-                    int available = source.Item.m_stack - SeekingIndex.InFlightOn(chest, source.Item);
+                    int available = source.Item.m_stack - SeekingIndex.InFlightOn(source.Item);
                     int take = Mathf.Min(available, remaining - fromChest);
                     if (take <= 0) { continue; }
                     if (fromChest == 0) { first = source; }
@@ -125,6 +132,124 @@ namespace DvergerAutomation {
             ByChest.Clear();
             ChestOrder.Clear();
         }
+
+        // ---- the ground -------------------------------------------------------------------
+
+        // A ground item being taken, waiting on the item to become this client's.
+        private sealed class Pickup {
+            internal SeekingTable Table;
+            internal ItemDrop Drop;
+            internal ItemDrop.ItemData Prototype;
+            internal int Amount;
+            internal SeekingIndex.InFlight Held;
+            internal Delivery Delivery;
+            internal float Since;
+        }
+
+        private static readonly List<Pickup> Pickups = new List<Pickup>();
+        private static readonly List<SeekSource> GroundScratch = new List<SeekSource>();
+        // The owner hands an item over within a round trip; vanilla's own retry backs off from 0.2s.
+        private const float PickupWaitSeconds = 3f;
+
+        /// <summary>Starts taking what the entry has lying on the ground, nearest first. Returns how much is still to take.</summary>
+        private static int TakeFromGround(SeekingTable table, SeekEntry entry, int remaining, Vector3 origin) {
+            GroundScratch.Clear();
+            foreach (SeekSource source in entry.Sources) {
+                // Picked up or despawned since the list was drawn: there is nothing left to ask for.
+                if (!source.Ground || source.Drop == null || source.Drop.m_nview == null || !source.Drop.m_nview.IsValid()) { continue; }
+                GroundScratch.Add(source);
+            }
+            GroundScratch.Sort((a, b) =>
+                (a.Drop.transform.position - origin).sqrMagnitude.CompareTo((b.Drop.transform.position - origin).sqrMagnitude));
+
+            foreach (SeekSource source in GroundScratch) {
+                if (remaining <= 0) { break; }
+                int take = Mathf.Min(source.Item.m_stack - SeekingIndex.InFlightOn(source.Item), remaining);
+                if (take <= 0) { continue; }
+                remaining -= take;
+
+                Pickup pickup = new Pickup {
+                    Table = table,
+                    Drop = source.Drop,
+                    // What it was when clicked, to check it is still that once it is ours.
+                    Prototype = source.Item.Clone(),
+                    Amount = take,
+                    Held = SeekingIndex.HoldOff(source, take),
+                    Delivery = new Delivery { Prototype = source.Item.Clone(), Amount = take },
+                    Since = Time.time,
+                };
+                Deliveries.Add(pickup.Delivery);
+                if (!TryFinish(pickup)) { Pickups.Add(pickup); }
+            }
+            GroundScratch.Clear();
+            return remaining;
+        }
+
+        /// <summary>
+        /// Takes the units once the item is this client's, asking for it again until then. True when the
+        /// pickup is settled either way.
+        /// </summary>
+        private static bool TryFinish(Pickup pickup) {
+            ItemDrop drop = pickup.Drop;
+            if (drop == null || drop.m_nview == null || !drop.m_nview.IsValid()) {
+                Settle(pickup);
+                Report(StorageRpc.Status.NotFound);
+                return true;
+            }
+            if (!drop.CanPickup(autoPickupDelay: false)) {
+                if (Time.time - pickup.Since > PickupWaitSeconds) {
+                    Settle(pickup);
+                    Report(StorageRpc.Status.NotOwner);
+                    return true;
+                }
+                // Its own back-off decides whether this actually asks again.
+                drop.RequestOwn();
+                return false;
+            }
+
+            // Ours now, and possibly changed on the way: someone took part of it, or it merged with a pile
+            // beside it. Read it fresh and check it is still what was clicked.
+            drop.Load();
+            ItemDrop.ItemData item = drop.m_itemData;
+            Player player = Player.m_localPlayer;
+            if (player == null || !ItemIdentity.Interchangeable(pickup.Prototype, item)) {
+                Settle(pickup);
+                Report(StorageRpc.Status.Changed);
+                return true;
+            }
+            // The one rule vanilla's pickup has that a chest does not: a quest item the player already has.
+            if (item.m_shared.m_questItem && player.HaveUniqueKey(item.m_shared.m_name)) {
+                Settle(pickup);
+                player.Message(MessageHud.MessageType.Center, "$msg_cantpickup");
+                return true;
+            }
+
+            int take = Mathf.Min(pickup.Amount, item.m_stack);
+            ItemDrop.ItemData slice = item.Clone();
+            slice.m_stack = take;
+            slice.m_equipped = false;
+            Vector3 where = drop.transform.position;
+            // Off the ground first, then into the pack, as a chest's owner does it: the units never exist
+            // twice.
+            if (take >= item.m_stack) {
+                ZNetScene.instance.Destroy(drop.gameObject);
+            } else {
+                drop.SetStack(item.m_stack - take);
+            }
+            Settle(pickup);
+            PlayerDelivery.Give(slice);
+            player.ShowPickupMessage(slice, take);
+            if (pickup.Table != null) { pickup.Table.ShowRetrieval(where); }
+            SeekingIndex.MarkDirty();
+            return true;
+        }
+
+        private static void Settle(Pickup pickup) {
+            Deliveries.Remove(pickup.Delivery);
+            SeekingIndex.Release(pickup.Held);
+        }
+
+        // ---- chests -------------------------------------------------------------------------
 
         private static void Request(SeekingTable table, ItemDrop.ItemData prototype, SeekSource first, int amount, List<SeekingIndex.InFlight> held, bool retried) {
             Container chest = first.Chest;
@@ -157,7 +282,7 @@ namespace DvergerAutomation {
                         foreach (ItemDrop.ItemData item in items) {
                             delivered += item.m_stack;
                             shown = shown ?? item;
-                            StorageReserve.HandToPlayer(item);
+                            PlayerDelivery.Give(item);
                         }
                     }
                     if (!intact) {
@@ -207,8 +332,14 @@ namespace DvergerAutomation {
         private static readonly List<Retry> Retries = new List<Retry>();
         private const float RetryWaitSeconds = 3f;
 
-        /// <summary>Sends the retries whose chest has reached its new owner. Run every frame.</summary>
+        /// <summary>
+        /// Finishes ground pickups whose item has become this client's, and sends the retries whose chest
+        /// has reached its new owner. Run every frame.
+        /// </summary>
         internal static void Tick() {
+            for (int i = Pickups.Count - 1; i >= 0; --i) {
+                if (TryFinish(Pickups[i])) { Pickups.RemoveAt(i); }
+            }
             for (int i = Retries.Count - 1; i >= 0; --i) {
                 Retry retry = Retries[i];
                 Container chest = retry.First.Chest;
@@ -257,6 +388,7 @@ namespace DvergerAutomation {
         internal static void Reset() {
             Deliveries.Clear();
             Retries.Clear();
+            Pickups.Clear();
         }
     }
 }

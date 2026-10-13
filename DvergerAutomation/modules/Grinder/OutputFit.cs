@@ -42,14 +42,14 @@ namespace DvergerAutomation {
                 if (SeenBefore(outputs, i)) { continue; }
                 int amount = 0;
                 for (int j = i; j < outputs.Count; ++j) {
-                    if (StacksWith(outputs[j].Template, template)) { amount += outputs[j].Amount; }
+                    if (ItemIdentity.SameStack(outputs[j].Template, template)) { amount += outputs[j].Amount; }
                 }
 
                 int max = Mathf.Max(1, template.m_shared.m_maxStackSize);
                 int room = 0;
                 if (max > 1) {
                     foreach (ItemDrop.ItemData item in have) {
-                        if (item != null && item.m_stack < max && StacksWith(item, template)) { room += max - item.m_stack; }
+                        if (item != null && item.m_stack < max && ItemIdentity.SameStack(item, template)) { room += max - item.m_stack; }
                     }
                 }
                 int left = amount - room;
@@ -79,17 +79,9 @@ namespace DvergerAutomation {
 
         private static bool SeenBefore(List<Output> outputs, int index) {
             for (int k = 0; k < index; ++k) {
-                if (StacksWith(outputs[k].Template, outputs[index].Template)) { return true; }
+                if (ItemIdentity.SameStack(outputs[k].Template, outputs[index].Template)) { return true; }
             }
             return false;
-        }
-
-        // Inventory.FindFreeStackItem's own test.
-        private static bool StacksWith(ItemDrop.ItemData a, ItemDrop.ItemData b) {
-            return a.m_shared.m_name == b.m_shared.m_name
-                && a.m_quality == b.m_quality
-                && a.m_worldLevel == b.m_worldLevel
-                && a.m_cheated == b.m_cheated;
         }
     }
 }

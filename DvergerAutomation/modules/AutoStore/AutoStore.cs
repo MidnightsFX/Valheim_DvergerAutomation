@@ -30,22 +30,12 @@ namespace DvergerAutomation {
         // The bundle prefab's Container, kept so a live size change also applies to pieces placed later.
         private static Container prefabBox;
 
-        // Every live deposit box. Container_Load_Patch runs for every chest in the world once a second, so
-        // telling a deposit box apart has to be a hash lookup, not a hierarchy walk.
-        private static readonly HashSet<Container> DepositBoxes = new HashSet<Container>();
-
-        internal static void RegisterDepositBox(Container box) {
-            if (box == null) { return; }
-            DepositBoxes.Add(box);
-            ApplySize(box);
-        }
-
-        internal static void UnregisterDepositBox(Container box) {
-            if (box != null) { DepositBoxes.Remove(box); }
-        }
-
+        /// <summary>
+        /// Whether the container is an AutoSorter's deposit box. Container_Load_Patch asks this of every
+        /// chest in the world once a second, so it is a registry lookup, not a hierarchy walk.
+        /// </summary>
         internal static bool IsDepositBox(Container container) {
-            return container != null && DepositBoxes.Contains(container);
+            return StorageRegistry.KindOf(container) == StorageRegistry.Kind.DepositBox;
         }
 
         /// <summary>
@@ -80,10 +70,12 @@ namespace DvergerAutomation {
         // Config sync or an admin edit: resize the prefab (pieces placed from now on) and every live box.
         private static void OnSizeChanged(object sender, System.EventArgs e) {
             ApplySize(prefabBox);
-            foreach (Container box in DepositBoxes) {
+            List<Container> boxes = new List<Container>();
+            StorageRegistry.OfKind(StorageRegistry.Kind.DepositBox, boxes);
+            foreach (Container box in boxes) {
                 // Rebuilding the grid under a player's open panel would reset their selection and any drag in
                 // progress. Their close hook applies the size instead.
-                if (box == null || box.IsInUse()) { continue; }
+                if (box.IsInUse()) { continue; }
                 ApplySize(box);
             }
         }
@@ -128,22 +120,8 @@ namespace DvergerAutomation {
                 }
             }
 
-            // There is no ZNetView on the child, so the Container has to be pointed at the piece's own.
-            // Without this Container.Awake NREs on the very next line (m_nview.GetZDO()).
-            box.m_rootObjectOverride = prefab.GetComponent<ZNetView>();
-            box.m_name = "$DA_store_goods_name";
-            box.m_checkGuardStone = true;
-
-            // Already correct in the prefab, re-asserted because each would break the piece in a way that
-            // is not obvious from the Unity inspector:
-            //  - Private calls m_piece.GetCreator(), and m_piece is null on a child object.
-            //  - autoDestroyEmpty would nview.Destroy() the SHARED root view, deleting the whole piece
-            //    the moment the box ran empty.
-            //  - any discover stat other than None invokes an RPC vanilla registers under a different
-            //    name ("RPC_Discovered"), logging an unknown-RPC error on every open.
-            box.m_privacy = Container.PrivacySetting.Public;
-            box.m_autoDestroyEmpty = false;
-            box.m_discoverStat = PlayerStatType.None;
+            // Already correct in the prefab, re-asserted for the reasons MachineStore.Finish gives.
+            MachineStore.Finish(box, prefab.GetComponent<ZNetView>(), "$DA_store_goods_name");
 
             // Size comes from config, not from whatever the prefab was saved with in Unity. Server sync and
             // admin edits arrive later as SettingChanged.
@@ -169,6 +147,11 @@ namespace DvergerAutomation {
         private static readonly HashSet<AutomationHub> Retrying = new HashSet<AutomationHub>();
         private const int RetryAttempts = 3;
         private const float RetryDelay = 2f;
+
+        // Reused by every pass: the linked chests that can receive sorted goods, grouped by the names of
+        // what each already holds. Built once per pass, so each chest is read once rather than once per stack.
+        private static readonly Dictionary<string, List<Container>> TargetsByName = new Dictionary<string, List<Container>>();
+        private static readonly Stack<List<Container>> SpareLists = new Stack<List<Container>>();
 
         /// <summary>
         /// Distributes the deposit box's contents into the hub's linked chests. Anything left over stays
@@ -196,7 +179,8 @@ namespace DvergerAutomation {
             if (boxView == null || !boxView.IsValid() || !boxView.IsOwner()) { return result; }
 
             // A chest built since the last scan tick should still be a valid destination.
-            hub.Rescan();
+            hub.ScanIfChanged();
+            IndexTargets(hub);
 
             int stored = 0;
             HashSet<Container> usedChests = new HashSet<Container>();
@@ -204,54 +188,11 @@ namespace DvergerAutomation {
             // GetAllItems hands back the live backing list and emptied stacks drop out of it, so iterate
             // a copy.
             foreach (ItemDrop.ItemData item in new List<ItemDrop.ItemData>(src.GetAllItems())) {
-                if (item == null || item.m_shared == null) { continue; }
-                // Enchanted gear shares m_shared.m_name with its mundane counterpart, so matching by type
-                // would happily file a legendary into a chest of ordinary swords. Note this asks
-                // IsMagicItem, not IsProtectedItem: the latter is additionally gated on Epic Loot's
-                // provider having registered, and this switch has to hold either way.
-                if (!ValConfig.SortMagicItems.Value && EpicLootIntegration.IsMagicItem(item)) { continue; }
-
-                int remaining = item.m_stack;
-                bool asked = false;
-                foreach (Container target in hub.LinkedContainers) {
-                    if (remaining <= 0) { break; }
-                    if (!IsSortTarget(hub, target)) { continue; }
-                    Inventory dst = target.GetInventory();
-                    if (dst == null || !HasMatching(dst, item)) { continue; }
-
-                    // Checked before asking, so a chest with no room is not handed over for nothing.
-                    if (FreeSpaceFor(dst, item) <= 0) { continue; }
-
-                    if (CraftFromStoragePatches.IsBusy(target)) {
-                        // Open in this player's own panel: left alone, as before.
-                        if (target.m_nview.IsOwner()) { continue; }
-                        // Open in another player's. It cannot change hands, so its owner files the items.
-                        int sent = SendToOpenChest(hub, src, item, target, remaining);
-                        if (sent <= 0) { continue; }
-                        remaining -= sent;
-                        stored += sent;
-                        usedChests.Add(target);
-                        continue;
-                    }
-
-                    // Only the chest's owner may write to it. One someone else owns is asked for, and this
-                    // item waits in the box for the retry.
-                    if (!StorageOwnership.TryAcquire(target)) {
-                        asked = true;
-                        continue;
-                    }
-                    // TryAcquire reloaded the grid, so ask again of what is actually in it now.
-                    if (!HasMatching(dst, item)) { continue; }
-
-                    int landed = MoveMeasured(src, item, dst, remaining);
-                    if (landed <= 0) { continue; }
-                    remaining -= landed;
-                    stored += landed;
-                    usedChests.Add(target);
-                }
-                // Only waiting if an owned chest did not end up taking it all anyway.
-                if (asked && remaining > 0) { result.Waiting = true; }
+                if (!Sortable(item)) { continue; }
+                if (!TargetsByName.TryGetValue(item.m_shared.m_name, out List<Container> holders)) { continue; }
+                stored += FileItem(hub, src, item, holders, usedChests, ref result.Waiting);
             }
+            ReleaseTargets();
 
             if (stored > 0) {
                 // Chest contents changed outside a membership rebuild.
@@ -273,6 +214,143 @@ namespace DvergerAutomation {
             return result;
         }
 
+        // Enchanted gear shares m_shared.m_name with its mundane counterpart, so matching by type would
+        // happily file a legendary into a chest of ordinary swords. Note this asks IsMagicItem, not
+        // IsProtectedItem: the latter is additionally gated on Epic Loot's provider having registered, and
+        // this switch has to hold either way.
+        private static bool Sortable(ItemDrop.ItemData item) {
+            if (item == null || item.m_shared == null) { return false; }
+            return ValConfig.SortMagicItems.Value || !EpicLootIntegration.IsMagicItem(item);
+        }
+
+        /// <summary>
+        /// Files one stack from the box into the chests already holding its kind, in link order. Returns how
+        /// many units left the box. <paramref name="waiting"/> is set when part of it has to wait for a chest
+        /// another player still owns.
+        /// </summary>
+        private static int FileItem(AutomationHub hub, Inventory src, ItemDrop.ItemData item, List<Container> holders, HashSet<Container> usedChests, ref bool waiting) {
+            int remaining = item.m_stack;
+            int stored = 0;
+            bool asked = false;
+            foreach (Container target in holders) {
+                if (remaining <= 0) { break; }
+                Inventory dst = target.GetInventory();
+                if (dst == null || !HasMatching(dst, item)) { continue; }
+
+                // Checked before asking, so a chest with no room is not handed over for nothing.
+                if (InventoryOps.FreeSpaceFor(dst, item) <= 0) { continue; }
+
+                if (StorageOwnership.IsBusy(target)) {
+                    ZNetView view = target.m_nview;
+                    // Unloaded, or open in this player's own panel: left alone.
+                    if (view == null || !view.IsValid() || view.IsOwner()) { continue; }
+                    // Open in another player's. It cannot change hands, so its owner files the items.
+                    int sent = SendToOpenChest(hub, src, item, target, remaining);
+                    if (sent <= 0) { continue; }
+                    remaining -= sent;
+                    stored += sent;
+                    usedChests.Add(target);
+                    continue;
+                }
+
+                // Only the chest's owner may write to it. One someone else owns is asked for, and this
+                // item waits in the box for the retry.
+                if (!StorageOwnership.TryAcquire(target)) {
+                    asked = true;
+                    continue;
+                }
+                // TryAcquire reloaded the grid, so ask again of what is actually in it now.
+                if (!HasMatching(dst, item)) { continue; }
+
+                int landed = InventoryOps.MoveMeasured(src, item, dst, remaining);
+                if (landed <= 0) { continue; }
+                remaining -= landed;
+                stored += landed;
+                usedChests.Add(target);
+            }
+            // Only waiting if an owned chest did not end up taking it all anyway.
+            if (asked && remaining > 0) { waiting = true; }
+            return stored;
+        }
+
+        /// <summary>
+        /// Groups the hub's linked chests that can receive sorted goods by the names of what each already
+        /// holds, in link order. Paired with <see cref="ReleaseTargets"/>.
+        /// </summary>
+        private static void IndexTargets(AutomationHub hub) {
+            ReleaseTargets();
+            foreach (Container target in hub.LinkedContainers) {
+                if (!IsSortTarget(target)) { continue; }
+                Inventory dst = target.GetInventory();
+                if (dst == null) { continue; }
+                foreach (ItemDrop.ItemData have in dst.GetAllItems()) {
+                    if (have == null || have.m_shared == null) { continue; }
+                    if (!TargetsByName.TryGetValue(have.m_shared.m_name, out List<Container> holders)) {
+                        holders = SpareLists.Count > 0 ? SpareLists.Pop() : new List<Container>();
+                        TargetsByName[have.m_shared.m_name] = holders;
+                    }
+                    // A chest holding several stacks of one thing is listed once.
+                    if (holders.Count == 0 || holders[holders.Count - 1] != target) { holders.Add(target); }
+                }
+            }
+        }
+
+        private static void ReleaseTargets() {
+            foreach (List<Container> holders in TargetsByName.Values) {
+                holders.Clear();
+                SpareLists.Push(holders);
+            }
+            TargetsByName.Clear();
+        }
+
+        /// <summary>
+        /// Whether a linked container can receive sorted goods at all, before looking at what it holds.
+        /// </summary>
+        private static bool IsSortTarget(Container target) {
+            if (target == null) { return false; }
+            // Public chests only. The linked pool admits a Private chest when the local player placed it,
+            // which is right for crafting out of your own storage, but a locked chest is a deliberate
+            // choice about what goes in it - it is never a sort destination. Group chests never reach the
+            // pool, but the rule is phrased as "Public or nothing" so it cannot quietly start admitting them.
+            if (target.m_privacy != Container.PrivacySetting.Public) { return false; }
+            // Plain chests only. A machine's store is a working buffer, not storage: a Hopper's already
+            // holds whatever its smelters just produced and would soak up the whole haul, a Grinder's
+            // results chest would fill up under it, and a Lighter's tank would take the coal meant for the
+            // coal chest. Crafting still counts them. Boats and carts lend to crafting only too: they leave,
+            // and anything filed into one would leave with them - a cart that happens to carry wood is not
+            // the wood chest.
+            return StorageRegistry.KindOf(target) == StorageRegistry.Kind.Chest;
+        }
+
+        /// <summary>
+        /// While the player has a deposit box open, asks ahead for the chests its contents would be filed
+        /// into, so they are this client's by the time the box closes and the sort runs.
+        /// </summary>
+        internal static void WantAhead(Container open) {
+            if (open == null || !IsDepositBox(open)) { return; }
+            AutomationHub hub = StorageRegistry.HolderOf<AutomationHub>(open);
+            if (!CanSort(hub) || hub.DepositBox != open) { return; }
+            Inventory src = open.GetInventory();
+            if (src == null || src.NrOfItems() == 0) { return; }
+
+            IndexTargets(hub);
+            foreach (ItemDrop.ItemData item in src.GetAllItems()) {
+                if (!Sortable(item)) { continue; }
+                if (!TargetsByName.TryGetValue(item.m_shared.m_name, out List<Container> holders)) { continue; }
+                foreach (Container target in holders) {
+                    Inventory dst = target.GetInventory();
+                    if (dst == null || StorageOwnership.IsBusy(target)) { continue; }
+                    if (HasMatching(dst, item) && InventoryOps.FreeSpaceFor(dst, item) > 0) { StorageOwnership.Want(target); }
+                }
+            }
+            ReleaseTargets();
+        }
+
+        /// <summary>The hub was switched off or unloaded; Unity stopped its retry without running its finally block.</summary>
+        internal static void HubDisabled(AutomationHub hub) {
+            Retrying.Remove(hub);
+        }
+
         // ---- filing into a chest someone has open ----------------------------------
 
         /// <summary>
@@ -286,8 +364,8 @@ namespace DvergerAutomation {
         /// </summary>
         private static int SendToOpenChest(AutomationHub hub, Inventory src, ItemDrop.ItemData item, Container target, int amount) {
             // Cannot be rebuilt on the owner's side, so it would leave here and arrive nowhere.
-            if (item.m_dropPrefab == null) { return 0; }
-            amount = Mathf.Min(amount, Mathf.Min(item.m_stack, FreeSpaceFor(target.GetInventory(), item)));
+            if (!ItemIdentity.CanTravel(item)) { return 0; }
+            amount = Mathf.Min(amount, Mathf.Min(item.m_stack, InventoryOps.FreeSpaceFor(target.GetInventory(), item)));
             if (amount <= 0) { return 0; }
 
             ItemDrop.ItemData sent = item.Clone();
@@ -327,7 +405,7 @@ namespace DvergerAutomation {
             Container box = hub != null ? hub.DepositBox : null;
             if (box != null && box.m_nview != null && box.m_nview.IsValid() && box.m_nview.IsOwner()) {
                 StorageOwnership.Sync(box);
-                left -= AddMeasured(box.GetInventory(), item, left);
+                left -= InventoryOps.AddMeasured(box.GetInventory(), item, left);
             }
             if (ValConfig.EnableDebugMode.Value) {
                 Logger.LogInfo($"[AutoStore] {item.m_stack} {item.m_shared.m_name} came back from an open chest; {left} did not fit in the box.");
@@ -335,64 +413,10 @@ namespace DvergerAutomation {
             if (left > 0) {
                 ItemDrop.ItemData rest = item.Clone();
                 rest.m_stack = left;
-                StorageReserve.HandToPlayer(rest);
+                PlayerDelivery.Give(rest);
             }
             if (Player.m_localPlayer != null) {
                 Player.m_localPlayer.Message(MessageHud.MessageType.Center, Localization.instance.Localize("$DA_Sorted_returned", item.m_stack.ToString()));
-            }
-        }
-
-        /// <summary>
-        /// Whether a linked container can receive sorted goods at all, before looking at what it holds.
-        /// </summary>
-        private static bool IsSortTarget(AutomationHub hub, Container target) {
-            if (target == null) { return false; }
-            // Public chests only. The linked pool admits a Private chest when the local player placed it,
-            // which is right for crafting out of your own storage, but a locked chest is a deliberate
-            // choice about what goes in it - it is never a sort destination. Group chests never reach the
-            // pool, but the rule is phrased as "Public or nothing" so it cannot quietly start admitting them.
-            if (target.m_privacy != Container.PrivacySetting.Public) { return false; }
-            // A hopper's store is a working buffer, not storage: it already holds whatever its smelters
-            // just produced, so it matches everything of that type and would soak up the whole haul - and
-            // a full hopper stops collecting output. Crafting still counts it (it is in the linked pool),
-            // it just never receives sorted goods.
-            if (target.GetComponentInParent<HopperHub>() != null) { return false; }
-            // A Grinder's results chest likewise: filing materials into it would fill it up under the
-            // Grinder, which then stops until someone empties it.
-            if (target.GetComponentInParent<GrinderHub>() != null) { return false; }
-            // A Lighter's fuel tank is a working buffer too: once it holds some coal it would soak up a
-            // whole haul meant for the coal chest.
-            if (target.GetComponentInParent<LighterHub>() != null) { return false; }
-            // Boats and carts lend to crafting only. They leave, and anything filed into one would leave
-            // with them - a cart that happens to carry wood is not the wood chest.
-            if (hub.LinkedVehicles.ContainsKey(target)) { return false; }
-            return true;
-        }
-
-        /// <summary>
-        /// While the player has a deposit box open, asks ahead for the chests its contents would be filed
-        /// into, so they are this client's by the time the box closes and the sort runs.
-        /// </summary>
-        internal static void WantAhead(Container open) {
-            if (open == null || !IsDepositBox(open) || !ValConfig.AutoStoreEnabled.Value) { return; }
-            AutomationHub hub = open.GetComponentInParent<AutomationHub>();
-            if (hub == null || hub.DepositBox != open) { return; }
-            if (ValConfig.RequireCores.Value && hub.CoreCount == 0) { return; }
-            Inventory src = open.GetInventory();
-            if (src == null || src.NrOfItems() == 0) { return; }
-
-            foreach (Container target in hub.LinkedContainers) {
-                if (!IsSortTarget(hub, target)) { continue; }
-                Inventory dst = target.GetInventory();
-                if (dst == null || CraftFromStoragePatches.IsBusy(target)) { continue; }
-                foreach (ItemDrop.ItemData item in src.GetAllItems()) {
-                    if (item == null || item.m_shared == null) { continue; }
-                    if (!ValConfig.SortMagicItems.Value && EpicLootIntegration.IsMagicItem(item)) { continue; }
-                    if (HasMatching(dst, item) && FreeSpaceFor(dst, item) > 0) {
-                        StorageOwnership.Want(target);
-                        break;
-                    }
-                }
             }
         }
 
@@ -432,42 +456,22 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// Moves up to <paramref name="amount"/> units of <paramref name="item"/> out of
-        /// <paramref name="from"/> and into <paramref name="to"/>, returning how many actually landed.
-        /// Partial moves are the normal case - that is what lets one stack of 50 wood spread across three
-        /// chests.
-        ///
-        /// The amount is measured across the add rather than taken from <c>AddItem</c>'s return value: for
-        /// stackables it merges into existing stacks as it goes and can still report failure, so trusting
-        /// it would either strand units or remove more from the source than ever arrived.
+        /// Sorts <paramref name="box"/> if it is a deposit box whose hub sorts: what closing the box and the
+        /// Deposit Selected button both do.
         /// </summary>
-        internal static int MoveMeasured(Inventory from, ItemDrop.ItemData item, Inventory to, int amount) {
-            int landed = AddMeasured(to, item, amount);
-            if (landed <= 0) { return 0; }
-
-            // No yield or RPC between the add and this removal, so the units never exist twice.
-            from.RemoveItem(item, landed);
-            return landed;
+        internal static SortResult SortBox(Container box, Player player, bool report) {
+            if (!IsDepositBox(box)) { return default; }
+            AutomationHub hub = StorageRegistry.HolderOf<AutomationHub>(box);
+            if (!CanSort(hub) || hub.DepositBox != box) { return default; }
+            return Sort(hub, player, report);
         }
 
         /// <summary>
-        /// The adding half of <see cref="MoveMeasured"/>: puts up to <paramref name="amount"/> units of a
-        /// copy of <paramref name="item"/> into <paramref name="to"/> and returns how many landed. The item
-        /// handed in is left as it was, for a caller that holds it outside any inventory.
+        /// Whether the hub sorts at all. Off, or a dormant hub - whose scan deliberately links nothing, so
+        /// sorting would just hand everything straight back - and the box sits there as a plain chest.
         /// </summary>
-        internal static int AddMeasured(Inventory to, ItemDrop.ItemData item, int amount) {
-            amount = Mathf.Min(amount, Mathf.Min(item.m_stack, FreeSpaceFor(to, item)));
-            if (amount <= 0) { return 0; }
-
-            // A clone, because AddItem takes ownership of whatever instance it is handed. Clone carries
-            // durability, quality, crafter and Epic Loot's m_customData across.
-            string name = item.m_shared.m_name;
-            ItemDrop.ItemData slice = item.Clone();
-            slice.m_stack = amount;
-
-            int before = to.CountItems(name, -1, matchWorldLevel: false);
-            to.AddItem(slice);
-            return Mathf.Max(0, to.CountItems(name, -1, matchWorldLevel: false) - before);
+        internal static bool CanSort(AutomationHub hub) {
+            return hub != null && ValConfig.AutoStoreEnabled.Value && !hub.IsDormant;
         }
 
         /// <summary>True when the chest already holds an item that would stack with this one.</summary>
@@ -478,24 +482,6 @@ namespace DvergerAutomation {
                 if (have != null && have.IsSameType(item)) { return true; }
             }
             return false;
-        }
-
-        /// <summary>
-        /// How much of <paramref name="item"/> the chest can take: room on top of matching stacks plus
-        /// whole empty slots. Hand-rolled rather than <c>Inventory.FindFreeStackSpace</c>, which ignores
-        /// quality and so over-reports for gear.
-        /// </summary>
-        internal static int FreeSpaceFor(Inventory inv, ItemDrop.ItemData item) {
-            int max = Mathf.Max(1, item.m_shared.m_maxStackSize);
-            // Clamped: GetEmptySlots is a plain width*height - count, and Container.UpdateRows grows the
-            // grid to fit an over-full ZDO, so it can read negative.
-            int space = Mathf.Max(0, inv.GetEmptySlots()) * max;
-            foreach (ItemDrop.ItemData have in inv.GetAllItems()) {
-                if (have != null && have.m_stack < max && have.IsSameType(item)) {
-                    space += max - have.m_stack;
-                }
-            }
-            return space;
         }
 
         // One centre message: a second would just overwrite the first.

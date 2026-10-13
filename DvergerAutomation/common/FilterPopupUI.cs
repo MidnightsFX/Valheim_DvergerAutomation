@@ -17,10 +17,10 @@ namespace DvergerAutomation {
     }
 
     /// <summary>
-    /// The parts both [C] popups are built from: the AutoSorter's deposit filter
-    /// (<see cref="DepositFilterPanel"/>) and the Hopper's station picker (<see cref="HopperTargetPanel"/>).
-    /// A square [C] button beside the deposit button, and a column of small plates of clickable cells
-    /// hanging off it, laid out like MyLittleUI's crafting filter.
+    /// The parts the mod's buttons on the container panel are built from: the deposit button itself, and
+    /// both [C] popups - the AutoSorter's deposit filter (<see cref="DepositFilterPanel"/>) and the Hopper's
+    /// station picker (<see cref="HopperTargetPanel"/>). A square [C] button beside the deposit button, and
+    /// a column of small plates of clickable cells hanging off it, laid out like MyLittleUI's crafting filter.
     ///
     /// Everything is cloned from vanilla objects, so there is no art in the asset bundle for it: the
     /// button is Place stacks, the plates are the repair button's wood plate (as MyLittleUI does), and the
@@ -51,11 +51,86 @@ namespace DvergerAutomation {
         // ---- the [C] button ----------------------------------------------------
 
         /// <summary>
+        /// A copy of Place stacks, parented into the container panel, hidden, and calling
+        /// <paramref name="onClick"/>. The deposit button and every [C] are made this way, so all carry the
+        /// vanilla button sprite, label styling, click sound and a tooltip. With
+        /// <paramref name="keepGamepad"/> the copy also keeps Place stacks' controller binding and hint
+        /// glyph; otherwise it is pointer-only.
+        /// </summary>
+        internal static GameObject CloneStackAllButton(InventoryGui gui, string name, UnityAction onClick, bool keepGamepad = false) {
+            // worldPositionStays false: the two-argument overload keeps the clone's world transform by
+            // rewriting its local scale and position, which is never what a UI element parented into a
+            // different panel wants.
+            GameObject go = Object.Instantiate(gui.m_stackAllButton.gameObject, gui.m_container, false);
+            go.name = name;
+            go.SetActive(false);
+
+            // Place stacks binds the right stick (Take All has the left) and owns the hint glyph that
+            // advertises it. The deposit button keeps both: it takes over Place stacks' slot and Refresh
+            // hides the original while ours is up, and a hidden UIGamePad gets no Update, so the binding
+            // is handed across rather than contested. Anything else cloned from here is on screen
+            // alongside the deposit button and would be a second claimant to the same stick.
+            UIGamePad pad = go.GetComponent<UIGamePad>();
+            GameObject hint = null;
+            if (keepGamepad) {
+                hint = pad != null ? pad.m_hint : null;
+            } else {
+                if (pad != null) { Object.Destroy(pad); }
+                foreach (Transform child in go.transform) {
+                    if (child.name.StartsWith("gamepad_hint")) { Object.Destroy(child.gameObject); }
+                }
+            }
+
+            // Instantiate carries serialized listeners only, and InventoryGui adds OnStackAll at runtime,
+            // so the copy's onClick arrives empty. Cleared anyway rather than relying on that.
+            Button click = go.GetComponent<Button>();
+            click.onClick.RemoveAllListeners();
+            click.onClick.AddListener(onClick);
+
+            // A kept gamepad hint is left alone: its "$KEY_RStick" is meant to go through the game's
+            // localization, which turns it into the controller's glyph and swaps the glyph when the input
+            // layout changes, exactly as it does for the original.
+            foreach (TMP_Text text in go.GetComponentsInChildren<TMP_Text>(includeInactive: true)) {
+                if (hint != null && text.transform.IsChildOf(hint.transform)) { continue; }
+                DetachFromLocalization(text);
+            }
+            go.transform.SetAsLastSibling();
+            AddTooltip(gui, go);
+            return go;
+        }
+
+        /// <summary>
+        /// Keeps the game from writing a cloned label's old text back over whatever is written there. A
+        /// clone made from InventoryGui.Awake runs before the inventory's Localize component has had its
+        /// Start, so a copied label can still read "$inventory_stackall". Start's pass would localize it
+        /// and cache that token as the label's original text, and every UIInputHint that toggles afterwards
+        /// (RefreshLocalization) re-applies cached originals to all visible labels. A label with no '$' in
+        /// it is never cached, and dropping any entry already made covers the case where Start has run.
+        /// </summary>
+        internal static void DetachFromLocalization(TMP_Text text) {
+            if (text == null) { return; }
+            if (text.text != null && text.text.Contains("$")) { text.text = ""; }
+            Localization.instance?.RemoveTextFromCache(text);
+        }
+
+        /// <summary>
+        /// Place stacks has no tooltip of its own, so one is added and pointed at the tooltip prefab the
+        /// repair button already carries. Skipped rather than improvised if that is not there.
+        /// </summary>
+        private static void AddTooltip(InventoryGui gui, GameObject go) {
+            UITooltip template = gui.m_repairButton != null ? gui.m_repairButton.GetComponent<UITooltip>() : null;
+            if (template == null || template.m_tooltipPrefab == null) { return; }
+
+            UITooltip tooltip = go.AddComponent<UITooltip>();
+            tooltip.m_tooltipPrefab = template.m_tooltipPrefab;
+        }
+
+        /// <summary>
         /// Builds a hidden [C] next to the deposit button. Called once per InventoryGui, from
         /// <see cref="DepositAll.Attach"/>.
         /// </summary>
         internal static GameObject CreateButton(InventoryGui gui, string name, RectTransform deposit, UnityAction onClick) {
-            GameObject go = DepositAll.CloneStackAllButton(gui, name, onClick);
+            GameObject go = CloneStackAllButton(gui, name, onClick);
             RectTransform rect = (RectTransform)go.transform;
             rect.sizeDelta = new Vector2(ButtonSize, ButtonSize);
             PlaceBeside(rect, deposit);

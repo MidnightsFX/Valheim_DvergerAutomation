@@ -19,10 +19,10 @@ namespace DvergerAutomation {
         internal const int MaxItems = 255;
 
         /// <summary>
-        /// Writes copies of the items; the originals are not touched. Returns how many units went in, which
-        /// is short of what was handed over only when the payload ran out of room.
+        /// Writes copies of the items; the originals are not touched. Past <see cref="MaxItems"/> stacks the
+        /// rest are left out, and the count and total written alongside say what did go in.
         /// </summary>
-        internal static int Write(ZPackage pkg, IList<ItemDrop.ItemData> items) {
+        internal static void Write(ZPackage pkg, IList<ItemDrop.ItemData> items) {
             // Filled directly rather than through AddItem: that would merge stacks, and it is patched by
             // every mod that cares where items go.
             Inventory scratch = new Inventory("da", null, 1, 1);
@@ -48,7 +48,6 @@ namespace DvergerAutomation {
             pkg.Write(scratch.m_inventory.Count);
             pkg.Write(total);
             pkg.Write(body);
-            return total;
         }
 
         /// <summary>

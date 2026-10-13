@@ -3,8 +3,9 @@ using UnityEngine;
 
 namespace DvergerAutomation {
     /// <summary>
-    /// Registry of live hoppers, plus the core-driven speed-up applied to the smelters they link, and the
-    /// request that brings a linked station over to the client running its hopper.
+    /// Registry of live hoppers and of every loaded station on the Smelter component, plus the core-driven
+    /// speed-up applied to the smelters the hoppers link, and the request that brings a linked station over
+    /// to the client running its hopper.
     ///
     /// The speed-up is a straight write to <c>Smelter.m_secPerProduct</c>. That field is a plain
     /// instance field on the MonoBehaviour, copied fresh from the prefab on every instantiation, so
@@ -18,19 +19,23 @@ namespace DvergerAutomation {
         private static readonly Dictionary<Smelter, float> BaseSpeed = new Dictionary<Smelter, float>();
         // The multiplier currently in force per smelter, so an unchanged one is not rewritten.
         private static readonly Dictionary<Smelter, float> Applied = new Dictionary<Smelter, float>();
+        // What the speed map is rebuilt into; kept so a rebuild does not allocate.
+        private static readonly Dictionary<Smelter, float> Wanted = new Dictionary<Smelter, float>();
 
         private static readonly List<Smelter> Scratch = new List<Smelter>();
 
-        private const string StationRequestRpc = "DA_HopperStationRequest";
+        // Every station on the Smelter component that has loaded or been built, found by walking this
+        // rather than overlapping every collider within a hopper's reach.
+        private static readonly List<Smelter> AllStations = new List<Smelter>();
 
-        // Minimum gap between two requests for the same station. A handoff takes a round trip, and a
-        // station whose owner keeps it for its own hopper is asked again at this pace, not every pass.
-        private const float StationRequestInterval = 2f;
+        // What each station melts: the shared name its items carry, to the prefab name it is queued under.
+        private static readonly Dictionary<Smelter, Dictionary<string, string>> FeedableByStation = new Dictionary<Smelter, Dictionary<string, string>>();
 
-        private static readonly Dictionary<ZDOID, float> lastStationRequest = new Dictionary<ZDOID, float>();
+        // A handoff takes a round trip, and a station whose owner keeps it for its own hopper is asked again
+        // less and less often, up to this.
+        private const float StationRequestMaxInterval = 30f;
 
-        // ZRoutedRpc is rebuilt with every session, and registering twice on the same one throws.
-        private static ZRoutedRpc registeredOn;
+        private static readonly OwnerHandover StationHandover = new OwnerHandover("DA_HopperStationRequest", "Hopper", KeepStation, StationRequestMaxInterval);
 
         /// <summary>
         /// Moves on every time a station on the Smelter component is loaded or built, anywhere. A hopper
@@ -39,14 +44,44 @@ namespace DvergerAutomation {
         /// </summary>
         internal static int StationsLoaded { get; private set; }
 
-        internal static void NoteStationLoaded() { ++StationsLoaded; }
+        internal static void RegisterRpc(ZRoutedRpc rpc) {
+            StationHandover.Register(rpc);
+        }
 
-        internal static void RegisterRpc() {
-            ZRoutedRpc rpc = ZRoutedRpc.instance;
-            if (rpc == null || rpc == registeredOn) { return; }
-            rpc.Register<ZDOID>(StationRequestRpc, RPC_StationRequest);
-            registeredOn = rpc;
-            lastStationRequest.Clear();
+        /// <summary>A station has woken. A placement ghost has no ZDO and is left out.</summary>
+        internal static void StationLoaded(Smelter smelter) {
+            if (smelter.m_nview == null || smelter.m_nview.GetZDO() == null) { return; }
+            AllStations.Add(smelter);
+            ++StationsLoaded;
+        }
+
+        /// <summary>Every loaded station, the unloaded ones swept out on the way.</summary>
+        internal static List<Smelter> Stations() {
+            AllStations.RemoveAll(smelter => smelter == null);
+            return AllStations;
+        }
+
+        /// <summary>
+        /// What a station melts, by the shared name an item carries, mapped to the prefab name it is queued
+        /// under: the station's conversions, read once rather than for every item on every pass.
+        /// </summary>
+        internal static Dictionary<string, string> Feedable(Smelter smelter) {
+            if (FeedableByStation.TryGetValue(smelter, out Dictionary<string, string> feedable)) { return feedable; }
+            if (FeedableByStation.Count > AllStations.Count + 64) {
+                Scratch.Clear();
+                foreach (Smelter known in FeedableByStation.Keys) {
+                    if (known == null) { Scratch.Add(known); }
+                }
+                foreach (Smelter gone in Scratch) { FeedableByStation.Remove(gone); }
+                Scratch.Clear();
+            }
+            feedable = new Dictionary<string, string>();
+            foreach (Smelter.ItemConversion conversion in smelter.m_conversion) {
+                if (conversion.m_from == null || conversion.m_from.m_itemData == null) { continue; }
+                feedable[conversion.m_from.m_itemData.m_shared.m_name] = conversion.m_from.gameObject.name;
+            }
+            FeedableByStation[smelter] = feedable;
+            return feedable;
         }
 
         internal static void Register(HopperHub hub) {
@@ -66,16 +101,15 @@ namespace DvergerAutomation {
         /// ringing a smelter with hoppers would multiply without limit.
         /// </summary>
         internal static void RebuildSpeedMap() {
-            Dictionary<Smelter, float> want = new Dictionary<Smelter, float>();
-
+            Wanted.Clear();
             foreach (HopperHub hub in Hubs) {
                 if (hub == null || !hub.IsActive) { continue; }
                 float multiplier = hub.SpeedMultiplier;
                 if (multiplier <= 1f) { continue; }
                 foreach (Smelter smelter in hub.LinkedSmelters) {
                     if (smelter == null) { continue; }
-                    if (!want.TryGetValue(smelter, out float best) || multiplier > best) {
-                        want[smelter] = multiplier;
+                    if (!Wanted.TryGetValue(smelter, out float best) || multiplier > best) {
+                        Wanted[smelter] = multiplier;
                     }
                 }
             }
@@ -84,7 +118,7 @@ namespace DvergerAutomation {
             // entry would otherwise sit in these dictionaries for the rest of the session.
             Scratch.Clear();
             foreach (KeyValuePair<Smelter, float> entry in Applied) {
-                if (entry.Key == null || !want.ContainsKey(entry.Key)) { Scratch.Add(entry.Key); }
+                if (entry.Key == null || !Wanted.ContainsKey(entry.Key)) { Scratch.Add(entry.Key); }
             }
             foreach (Smelter smelter in Scratch) {
                 if (smelter != null && BaseSpeed.TryGetValue(smelter, out float original)) {
@@ -96,8 +130,9 @@ namespace DvergerAutomation {
                 Applied.Remove(smelter);
                 BaseSpeed.Remove(smelter);
             }
+            Scratch.Clear();
 
-            foreach (KeyValuePair<Smelter, float> entry in want) {
+            foreach (KeyValuePair<Smelter, float> entry in Wanted) {
                 Smelter smelter = entry.Key;
                 if (smelter == null) { continue; }
                 if (!BaseSpeed.TryGetValue(smelter, out float original)) {
@@ -116,6 +151,7 @@ namespace DvergerAutomation {
                     Logger.LogInfo($"[Hopper] {StationName(smelter)} running at {entry.Value:0.##}x: {original:0.#}s -> {smelter.m_secPerProduct:0.#}s per item.");
                 }
             }
+            Wanted.Clear();
         }
 
         // Charcoal kiln, smelter and blast furnace all share the Smelter component, so name the station.
@@ -190,19 +226,12 @@ namespace DvergerAutomation {
                 Container store = hub.Store;
                 if (store == null) { continue; }
                 // Someone has the hatch open; leave their panel alone.
-                if (CraftFromStoragePatches.IsBusy(store)) { continue; }
-                hub.SyncStore();
+                if (StorageOwnership.IsBusy(store)) { continue; }
+                StorageOwnership.Sync(store);
                 Inventory inv = store.GetInventory();
                 if (inv != null && inv.CanAddItem(product, stack)) { return inv; }
             }
             return null;
-        }
-
-        /// <summary>Whether the container is a hopper's store.</summary>
-        internal static bool IsStore(Container container) {
-            if (container == null) { return false; }
-            HopperHub hub = container.GetComponentInParent<HopperHub>();
-            return hub != null && hub.Store == container;
         }
 
         // ---- bringing stations to the hopper ------------------------------------
@@ -212,144 +241,28 @@ namespace DvergerAutomation {
         /// it. Feeding only ever touches stations this client owns (see <see cref="HopperHub"/>), and a
         /// hopper whose stations ran on several players' games used to feed only its own owner's share:
         /// the rest sat idle, and which ones ran shifted as players came and went. Bringing the stations
-        /// to the hopper keeps every one of them fed by one client. A station nobody owns is simply
-        /// taken - there is no one to race. Rate-limited per station, so it is cheap to call every pass.
+        /// to the hopper keeps every one of them fed by one client. Rate-limited per station, so it is
+        /// cheap to call every pass.
         /// </summary>
         internal static void AskForStation(Smelter smelter) {
-            if (smelter == null || smelter.m_nview == null || !smelter.m_nview.IsValid()) { return; }
-            ZDO zdo = smelter.m_nview.GetZDO();
-            long owner = zdo.GetOwner();
-            if (owner == 0L) {
-                smelter.m_nview.ClaimOwnership();
-                return;
-            }
-
-            float now = Time.time;
-            if (lastStationRequest.TryGetValue(zdo.m_uid, out float last) && now - last < StationRequestInterval) { return; }
-            lastStationRequest[zdo.m_uid] = now;
-            if (ZRoutedRpc.instance == null) { return; }
-            ZRoutedRpc.instance.InvokeRoutedRPC(owner, StationRequestRpc, zdo.m_uid);
+            if (smelter == null) { return; }
+            StationHandover.Ask(smelter.m_nview);
         }
 
-        /// <summary>
-        /// Another player's hopper wants a station this client owns. Handed over the way vanilla hands a
-        /// chest to the player opening it - <c>ForceSendZDO</c>, then <c>SetOwner</c>, from this side - so
-        /// the station's latest queue and fuel travel with it and this client stops running it at that
-        /// moment. Kept when a hopper this client runs feeds it as well: two hoppers covering one station
-        /// would otherwise pass it back and forth. A refusal is silent; the requester asks again later.
-        /// </summary>
-        private static void RPC_StationRequest(long sender, ZDOID id) {
-            try {
-                if (ZDOMan.instance == null || ZNetScene.instance == null) { return; }
-                if (sender == ZDOMan.GetSessionID()) { return; }
-                ZDO zdo = ZDOMan.instance.GetZDO(id);
-                if (zdo == null || !zdo.IsOwner()) { return; }
-                GameObject root = ZNetScene.instance.FindInstance(id);
-                Smelter smelter = root != null ? root.GetComponentInChildren<Smelter>() : null;
-                if (smelter == null) { return; }
-                if (FedHere(smelter)) {
-                    if (ValConfig.EnableDebugMode.Value) {
-                        Logger.LogInfo($"[Hopper] kept {StationName(smelter)}: a hopper here feeds it too.");
-                    }
-                    return;
-                }
-
-                ZDOMan.instance.ForceSendZDO(sender, id);
-                zdo.SetOwner(sender);
-                if (ValConfig.EnableDebugMode.Value) {
-                    Logger.LogInfo($"[Hopper] handed {StationName(smelter)} to {sender}, whose hopper feeds it.");
-                }
-            } catch (System.Exception ex) {
-                Logger.LogError($"[Hopper] handing over a station failed: {ex}");
-            }
+        // The owner keeps a station when a hopper it runs feeds it as well: two hoppers covering one
+        // station would otherwise pass it back and forth.
+        private static bool KeepStation(GameObject root) {
+            Smelter smelter = root.GetComponentInChildren<Smelter>();
+            return smelter == null || FedHere(smelter);
         }
 
-        // A dedicated server never scans (see HopperHub's tick), so it always hands its stations on.
-        private static bool FedHere(Smelter smelter) {
+        /// <summary>Whether a hopper this client runs feeds the station.</summary>
+        internal static bool FedHere(Smelter smelter) {
             foreach (HopperHub hub in Hubs) {
                 if (hub == null || !hub.IsOwner || !hub.IsActive) { continue; }
                 if (hub.LinkedSmelters.Contains(smelter)) { return true; }
             }
             return false;
-        }
-    }
-
-    /// <summary>
-    /// Finishes the hopper's Container on the freshly loaded bundle prefab. Must run before the piece is
-    /// ever instantiated, because <c>Container.Awake</c> reads these fields to build its inventory and
-    /// bind its network view.
-    /// </summary>
-    internal static class HopperStore {
-        // Child path of the store inside the DA_ForgeHopper prefab.
-        private const string StorePath = "Hopper_Body/HopperStore";
-
-        internal const int MinRows = 2;
-        internal const int MaxRows = 8;
-        internal const int DefaultRows = 4;
-
-        // Fixed at the player's own inventory width. Deliberately NOT configurable: Inventory.Load
-        // re-adds every item at its saved grid position and the positional AddItem rejects x >= m_width
-        // outright, silently dropping anything in a column a narrowed grid no longer has. Rows are safe -
-        // Container.UpdateRows grows the grid to fit - so only the height is exposed.
-        internal const int Width = 8;
-
-        private static Container prefabStore;
-
-        internal static void ConfigurePrefab(GameObject prefab) {
-            if (prefab == null) {
-                Logger.LogWarning("Hopper: DA_ForgeHopper prefab missing; the store will not work.");
-                return;
-            }
-
-            Transform store = prefab.transform.Find(StorePath);
-            Container box = store != null ? store.GetComponent<Container>() : null;
-            if (box == null) {
-                // Fall back to any Container under the piece, so a rename in Unity is survivable.
-                box = prefab.GetComponentInChildren<Container>(includeInactive: true);
-            }
-            if (box == null) {
-                Logger.LogWarning($"Hopper: no Container at '{StorePath}' on {prefab.name}; the store will not work.");
-                return;
-            }
-
-            // There is no ZNetView on the child, so the Container has to be pointed at the piece's own.
-            // Without this Container.Awake NREs on the very next line (m_nview.GetZDO()).
-            box.m_rootObjectOverride = prefab.GetComponent<ZNetView>();
-            box.m_name = "$DA_hopper_store_name";
-            box.m_checkGuardStone = true;
-
-            // Each of these would break the piece in a way that is not obvious from the Unity inspector:
-            //  - Private calls m_piece.GetCreator(), and m_piece is null on a child object.
-            //  - autoDestroyEmpty would nview.Destroy() the SHARED root view, deleting the whole piece
-            //    the moment the store ran empty.
-            //  - any discover stat other than None invokes an RPC vanilla registers under a different
-            //    name ("RPC_Discovered"), logging an unknown-RPC error on every open.
-            box.m_privacy = Container.PrivacySetting.Public;
-            box.m_autoDestroyEmpty = false;
-            box.m_discoverStat = PlayerStatType.None;
-
-            prefabStore = box;
-            ApplySize(box);
-            ValConfig.HopperStoreRows.SettingChanged += OnRowsChanged;
-        }
-
-        internal static void ApplySize(Container box) {
-            if (box == null) { return; }
-            box.m_width = Width;
-            box.m_height = Mathf.Clamp(ValConfig.HopperStoreRows.Value, MinRows, MaxRows);
-
-            Inventory inv = box.GetInventory();
-            if (inv == null) { return; }   // prefab, or an instance whose Awake has not run yet
-            inv.m_width = Width;
-            inv.SetHeight(box.m_height);
-        }
-
-        private static void OnRowsChanged(object sender, System.EventArgs e) {
-            ApplySize(prefabStore);
-            foreach (HopperHub hub in HopperNetwork.Hubs) {
-                if (hub == null || hub.Store == null || hub.Store.IsInUse()) { continue; }
-                ApplySize(hub.Store);
-            }
         }
     }
 }

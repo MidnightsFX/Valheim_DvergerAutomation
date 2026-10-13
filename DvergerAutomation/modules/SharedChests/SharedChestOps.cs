@@ -66,7 +66,8 @@ namespace DvergerAutomation {
         // ---- the moves, on any inventory --------------------------------------------
         // `live` is the owner's real chest: an item is put into an empty slot through vanilla's AddItem,
         // so a mod that limits what a container accepts still has its say. On a preview copy the list is
-        // edited directly - nothing there needs asking, and AddItem logs every stack it touches.
+        // edited directly - nothing there needs asking, and AddItem logs every stack it touches - except
+        // for an item headed anywhere, which goes through AddItem on either, to be spread the way it would.
 
         /// <summary>
         /// Puts <paramref name="item"/> into a slot, or anywhere when <paramref name="to"/> is negative.
@@ -76,7 +77,7 @@ namespace DvergerAutomation {
         internal static int ApplyAdd(Inventory inv, ItemDrop.ItemData item, Vector2i to, bool wholeStack, bool live, out ItemDrop.ItemData swappedOut) {
             swappedOut = null;
             int amount = item.m_stack;
-            if (to.x < 0 || to.y < 0) { return AutoStore.AddMeasured(inv, item, amount); }
+            if (to.x < 0 || to.y < 0) { return InventoryOps.AddMeasured(inv, item, amount); }
             if (!InGrid(inv, to)) { return 0; }
 
             ItemDrop.ItemData inSlot = inv.GetItemAt(to.x, to.y);
@@ -193,7 +194,7 @@ namespace DvergerAutomation {
             ItemCodec.Write(args, new[] { item });
         }
 
-        private static StorageRpc.Status Add(Container container, long sender, ZPackage args, ZPackage reply) {
+        private static StorageRpc.Status Add(Container container, ZPackage args, ZPackage reply) {
             Vector2i to = args.ReadVector2i();
             bool wholeStack = args.ReadBool();
             int expect = args.ReadInt();
@@ -240,7 +241,7 @@ namespace DvergerAutomation {
             if (swapIn != null) { ItemCodec.Write(args, new[] { swapIn }); }
         }
 
-        private static StorageRpc.Status Remove(Container container, long sender, ZPackage args, ZPackage reply) {
+        private static StorageRpc.Status Remove(Container container, ZPackage args, ZPackage reply) {
             Vector2i from = args.ReadVector2i();
             int amount = args.ReadInt();
             int expect = args.ReadInt();
@@ -257,7 +258,7 @@ namespace DvergerAutomation {
             ItemDrop.ItemData inSlot = inv.GetItemAt(from.x, from.y);
             if (inSlot == null || Fingerprint(inSlot) != expect) { return StorageRpc.Status.Changed; }
             // Cannot be rebuilt on the other side, so it would leave here and arrive nowhere.
-            if (inSlot.m_dropPrefab == null) { return StorageRpc.Status.Refused; }
+            if (!ItemIdentity.CanTravel(inSlot)) { return StorageRpc.Status.Refused; }
 
             ItemDrop.ItemData taken = ApplyRemove(inv, from, amount, swapIn, live: true);
             if (taken == null) { return StorageRpc.Status.Changed; }
@@ -284,7 +285,7 @@ namespace DvergerAutomation {
             args.Write(expectTo);
         }
 
-        private static StorageRpc.Status Move(Container container, long sender, ZPackage args, ZPackage reply) {
+        private static StorageRpc.Status Move(Container container, ZPackage args, ZPackage reply) {
             Vector2i from = args.ReadVector2i();
             Vector2i to = args.ReadVector2i();
             int amount = args.ReadInt();

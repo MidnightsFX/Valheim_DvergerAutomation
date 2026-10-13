@@ -60,9 +60,7 @@ Built with the Hammer, in the **Crafting** category, near a **Forge** (requireme
 | Coal | 40 |
 | Iron | 5 |
 
-Three dverger fuel tanks around a vented column, with a hatch on a wooden stand. Fill its tank through the hatch (or by using any part
-of the machine) with whatever your fires burn, and it keeps everything around it topped up: campfires, hearths, bonfires, braziers,
-standing and wall torches, ovens and hot tubs, each with its own fuel - wood, resin, coal, greydwarf eyes or guck.
+The Lighter can provide fuel to any light source, or fire within range.
 
 - **Range:** 64 metres by default.
 - **Emptiest first:** when the tank runs short, the pieces closest to going out are filled first.
@@ -72,9 +70,12 @@ standing and wall torches, ovens and hot tubs, each with its own fuel - wood, re
 - Hover it to see how many pieces it is tending, and which fuels it is missing. Fires the world placed itself and fires that are
   switched off are left alone.
 - The Autosorter never files anything into its tank, but crafting from storage can draw from it. Vanilla's Place stacks tops the tank up.
+- **Smoke:** while it is working, all three of its upright pipes give off wisps of smoke, and the centre column also puffs out the same
+  smoke a fire does. Like a fire's, that smoke gathers under a roof, and with no way out it can choke nearby fires and smoke players
+  out. The server setting `Physical Smoke` turns it off and leaves only the wisps.
 
-Its settings are under `Dverger Lighter`: range, seconds between passes, tank rows, and a list of pieces it should never fuel
-(for example `piece_oven` or `piece_bathtub`).
+Its settings are under `Dverger Lighter`: range, seconds between passes, tank rows, physical smoke, and a list of pieces it should
+never fuel (for example `piece_oven` or `piece_bathtub`).
 
 ### Seeking Table - Find and fetch from any chest
 
@@ -89,8 +90,7 @@ Built with the Hammer, in the **Crafting** category, near a **Black Forge** (req
 | Copper | 10 |
 | Refined eitr | 10 |
 
-A dverger table holding a blue galdr orb between four pillars. Use it and your inventory opens with every item in the chests
-around it laid out like one big chest: everything that stacks is added up, and gear is shown piece by piece.
+A vortex of dverger magic the seeking table can retrieve items from anywhere in the nearby area.
 
 - **Search** by name or by words in an item's description. With Epic Loot installed, start with `@` to search enchantments,
   exactly as on the enchanting table: `@attack speed, fire` finds gear carrying both.
@@ -100,6 +100,11 @@ around it laid out like one big chest: everything that stacks is added up, and g
 
 A brief blue line runs from the orb to each chest an item came out of. Each of the four pillars takes a **Black Core**, and every core
 reaches further. Boats, carts and Furnace Hopper storage in range are listed too; each can be turned off.
+
+The **Ground items** switch under the item types also lists everything lying on the ground within the table's range, added to
+what the chests hold. Taking an item picks it up from where it lies, before anything is taken from a chest. The switch is off
+until you turn it on, it is your own setting, and the ground is only looked over (once a second) while the table is open.
+A server can hide it with `Allow Ground Items`.
 
 ### Grinder - Break down what you no longer need
 
@@ -114,20 +119,25 @@ Built with the Hammer, in the **Crafting** category, near a **Black Forge** (req
 | Ashwood | 10 |
 | Charred cogwheel | 2 |
 
-A brutal dverger crusher: a spiked feed hopper over two spiked rollers, driven by a flywheel, on an iron machine body fed by a tank
-of molten lava. Anything with a crafting recipe can be fed to it: old gear, spare arrows, surplus food. It works through its queue
-one item at a time and returns part of what each one cost to make into the results chest behind its front hatch.
+The grinder allows you to break down items and recover a fraction of their value.
 
-- **Feeding:** use the hopper to choose from what you carry that it will take. The menu stays open while there is room in the queue.
-  A hotbar key feeds plain materials straight in, and Alt + Use takes the last item queued back out.
+- **Feeding:** the hopper on top is a chest of its own. Open it and put in what you want broken down; until you pull the lever you
+  can take anything back out.
+- **The lever:** on the Grinder's left side. Pulling it empties the hopper into the machine's processing queue (16 stacks by default;
+  anything past that waits in the hopper for the next pull) and starts it up. The lever stays thrown while there is work and drops
+  back when the queue runs out. You can refill the hopper and pull again while it runs.
 - **Returns:** 20% of the crafting cost by default, upgrades included, so a sword at quality 3 returns part of everything spent making
   and upgrading it. Fractions carry over from one item to the next, so nothing is lost to rounding.
 - **Molten Cores:** each of the ten sockets in its power panel adds 2% to the return and 10% to the speed.
-- Equipped items, items a trader sells and (by default) enchanted items are refused. The Autosorter never files anything into the
-  results chest, but crafting from storage can draw from it.
+- **Enchanted items** (Epic Loot): by default they return their share of the crafting cost like anything else. A server can also
+  have them return the same share of what enchanting them at their rarity costs (runestone, dust, and essence or reagent), have
+  them return only that, or turn both off so they pass through untouched.
+- Items a trader sells and blacklisted items are not ground: they come out in the results chest as they went in. Taking the
+  Grinder down drops everything still queued, intact. The Autosorter never files anything into the results chest, but crafting
+  from storage can draw from it.
 
-Its settings are under `Dverger Grinder`: base yield, yield and speed per core, seconds per item, queue size, results chest rows,
-enchanted items and a blacklist.
+Its settings are under `Dverger Grinder`: base yield, yield and speed per core, seconds per item, hopper rows, queue size, results
+chest rows, what enchanted items return, and a blacklist.
 
 ### Respects locks and wards
 
@@ -147,8 +157,9 @@ The Seeking Table takes from an open chest the same way: the player who has it o
 The Furnace Hopper and the Epic Loot enchanting table are more careful: they leave an open chest
 alone until it is closed.
 
-Crafting takes from a Furnace Hopper's storage the same way, through the player running the hopper,
-so the hopper never leaves its smelters to hand you its bars.
+Crafting takes from a Furnace Hopper's storage, a Lighter's tank and a Grinder's results chest the
+same way, through the player running the machine, so a machine never leaves its work to hand you its
+contents.
 
 Auto-store is stricter still: it only ever files items into public chests, so your own Private
 chests can feed crafting but never receive sorted goods.
@@ -160,8 +171,8 @@ it together. The first player to open it works exactly as in vanilla. Everyone w
 their moves carried out by that player's game, so there is only ever one copy of the chest being
 written. Your own moves show straight away and settle a moment later.
 
-- The Autosorter's deposit box, the Furnace Hopper's storage, the Grinder's results chest and the
-  Lighter's fuel tank stay one player at a time, because sorting, feeding, grinding and refuelling are
+- The Autosorter's deposit box, the Furnace Hopper's storage, the Grinder's hopper and results chest and
+  the Lighter's fuel tank stay one player at a time, because sorting, feeding, grinding and refuelling are
   done by whoever has them open.
 - Buttons other mods add to the chest screen (quick stack, sort) act for the player who opened the
   chest first. For anyone who joined after they do nothing, rather than risk losing or duplicating items.
@@ -177,8 +188,8 @@ whatever was on its way, and refuses a move it cannot carry out safely instead o
 
 If MultiUserChest is installed it takes over shared chests and this mod's own version steps aside.
 Crafting and building still draw from a chest however many players have it open, and the Autosorter's
-deposit box, the Furnace Hopper's storage, the Grinder's results chest and the Lighter's fuel tank still
-stay one player at a time.
+deposit box, the Furnace Hopper's storage, the Grinder's hopper and results chest and the Lighter's fuel
+tank still stay one player at a time.
 
 ### Epic Loot support (optional)
 

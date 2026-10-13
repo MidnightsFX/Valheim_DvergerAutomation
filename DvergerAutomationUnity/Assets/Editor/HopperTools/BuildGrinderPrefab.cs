@@ -20,6 +20,10 @@ using UnityEngine;
 /// bundle. The slab's UVs come to about one Grausten tile per two metres, the density of vanilla's own
 /// Grausten floors, so the material needs no retiling.
 ///
+/// It also builds DA_GrinderFeed, the hopper the Grinder spawns into its mouth (a container of its own; see
+/// GrinderFeed), builds the machine 30% larger than the model, keeps the black forge's lava heat
+/// (DA_LavaHeat) rising off the tank, and puts the start lever (DvergerGrinderLever.fbx) on its left flank.
+///
 /// Re-runnable: re-export the model or the textures and run it again rather than hand-editing the prefab.
 /// Shares the Hopper builder's helpers and its assembly definition.
 /// </summary>
@@ -28,7 +32,27 @@ public static class BuildGrinderPrefab {
     private const string PrefabDir = "Assets/Custom/Prefabs";
     private const string PieceName = "DA_Grinder";
     private const string PrefabPath = PrefabDir + "/" + PieceName + ".prefab";
+    // The hopper on top: a networked object of its own that the Grinder spawns (see GrinderFeed).
+    private const string FeedName = "DA_GrinderFeed";
+    private const string FeedPath = PrefabDir + "/" + FeedName + ".prefab";
     private const string BundleName = "automation";
+
+    // The whole machine is built this much larger than the model. Applied to the Grinder_Body wrapper last,
+    // so everything under it - model, colliders, effects - scales together.
+    private const float Scale = 1.3f;
+
+    // The black forge's heat off its lava, lifted by scripts/unity/lift_grinder_heat.py. Always on, over the
+    // lava tank. Its particle systems scale by their own transforms only (Local scaling), not the machine's.
+    private const string LavaHeatPath = "Assets/Custom/Effects/DA_LavaHeat.prefab";
+    // At the forge's own size the plume and glow swamped the tank (Carl, 2026-10-12): a tenth of it, then a
+    // fifth of that again.
+    private const float LavaHeatScale = 0.02f;
+    // Ashlands' lava bubbling (fx_lavabubbling), lifted by scripts/unity/lift_grinder_bubble.py and built in
+    // over the tank, where GrinderHub replays it every few seconds. Silent, two seconds long. Spawned whole it
+    // splashed three times the machine's size (Carl, 2026-10-12), so each of its systems is shrunk to this
+    // much of its own scale - again the only scale they read.
+    private const string LavaBubblePath = "Assets/Custom/Effects/DA_LavaBubble.prefab";
+    private const float LavaBubbleScale = 0.15f;
 
     private const string MatDir = "Assets/Custom/Materials/Grinder";
     private const string MockMatDir = "Assets/Custom/Mocks/Materials";
@@ -40,6 +64,8 @@ public static class BuildGrinderPrefab {
     private const string DustPath = "Assets/Custom/Effects/DA_SmelterSmoke.prefab";
 
     private const int PieceLayer = 10;
+    // "piece_nonsolid": still in the player's interact mask, but nothing collides with it.
+    private const int PieceNonSolidLayer = 16;
     private const int DefaultLayer = 0;
     private const int CoreSlots = 10;
 
@@ -56,28 +82,44 @@ public static class BuildGrinderPrefab {
     private static readonly float[] RollerSmoothness = { 0.3f, 0.2f };
     private static readonly string[] RollerNames = { "RollerA", "RollerB" };
 
+    // The start lever on the left flank (scripts/blender/build_grinder_lever.py), modelled in the Grinder
+    // model's own space so it lines up when dropped in beside it. Its two slots go on IronGrill_d as the
+    // rollers do, but the regions - plain iron, and the rust streak for the grip - are picked out by the
+    // materials' tiling: its own UVs are a proper unwrap, kept for painting it later.
+    private const string LeverModelPath = "Assets/Custom/Models/DvergerGrinderLever.fbx";
+    private static readonly string[] LeverSlots = { "Lever", "LeverGrip" };
+    private static readonly string[] LeverMaterials = { "Grinder_Lever", "Grinder_LeverGrip" };
+    // Scale x, y and offset x, y of _MainTex.
+    private static readonly Vector4[] LeverTiling = { new Vector4(0.63f, 0.94f, 0.03f, 0.03f), new Vector4(0.09f, 0.61f, 0.86f, 0.36f) };
+    // Metres added round the arm's grab box: the shaft alone is a thin thing to aim at.
+    private const float LeverGrabPadding = 0.06f;
+    // A heavy clunk as it is thrown: the Ashlands catapult dropping its legs.
+    private static readonly string[] LeverEffectMocks = { "JVLmock_sfx_catapult_legs_down" };
+
     // Vanilla materials used as they are: FBX slot -> vanilla material name.
     private static readonly string[] VanillaSlots = { "Lava", "MoltenCore", "Stone" };
     private static readonly string[] VanillaMaterials = { "BlackForgeLava_mat", "MoltenCore_mat", "Grausten_mat" };
 
     private static readonly string[] PlaceEffectMocks = { "JVLmock_vfx_Place_forge", "JVLmock_sfx_build_hammer_metal" };
     private static readonly string[] HitEffectMocks = { "JVLmock_vfx_HitSparks", "JVLmock_sfx_metal_blocked" };
-    // The eitr refinery's crunch as its grinder takes soft tissue, and the windmill's grinding with a
-    // spray of rock chips as each item is broken down.
-    private static readonly string[] FeedEffectMocks = { "JVLmock_fx_refinery_addtissue" };
-    private static readonly string[] ProduceEffectMocks = { "JVLmock_sfx_mill_produce", "JVLmock_vfx_RockHit" };
+    // As each item is broken down: the eitr refinery's crunch as its grinder takes soft tissue, the
+    // windmill's grinding, and a spray of rock chips.
+    private static readonly string[] ProduceEffectMocks = { "JVLmock_fx_refinery_addtissue", "JVLmock_sfx_mill_produce", "JVLmock_vfx_RockHit" };
 
     // Degrees per second. Heavy spiked drums: slower than the refinery's near-700 reads as more weight.
     private const float RollerSpeed = 240f;
 
-    // The feed collider: a box round the whole hopper, so it is hit before the hopper's own mesh from any
-    // side. Metres, centred on the model's Funnel empty.
+    // The hopper's collider: a box round the whole hopper, so it is hit before the hopper's own mesh from
+    // any side. Metres at model size, centred on the model's Funnel empty; scaled with the machine.
     private static readonly Vector3 FunnelBox = new Vector3(1.06f, 0.34f, 0.94f);
 
     [MenuItem("DvergerAutomation/Build Dverger Grinder (materials + prefab)")]
     public static void BuildAll() {
         List<string> notes = new List<string>();
-        if (BuildMaterials(notes)) { BuildPrefab(notes); }
+        if (BuildMaterials(notes)) {
+            BuildPrefab(notes);
+            BuildFeedPrefab(notes);
+        }
         Report(notes);
     }
 
@@ -130,19 +172,16 @@ public static class BuildGrinderPrefab {
         // on the roller renderers by BuildPrefab.
         Texture2D ironGrill = EnsureMockTexture("IronGrill_d", notes);
         for (int i = 0; i < RollerMaterials.Length; ++i) {
-            Material mat = LoadOrCreate(MatDir + "/" + RollerMaterials[i] + ".mat", shader);
-            mat.SetTexture("_MainTex", ironGrill);
-            mat.SetTexture("_MetallicTex", null);
-            mat.SetTexture("_BumpMap", null);
-            mat.SetColor("_Color", RollerTints[i]);
-            mat.SetFloat("_Metallic", RollerMetallic[i]);
-            mat.SetFloat("_Glossiness", RollerSmoothness[i]);
-            mat.SetFloat("_MetallicAlphaGloss", 0f);
-            mat.SetColor("_MetalColor", Color.white);
-            SetPieceFlags(mat);
-            mat.DisableKeyword("_NORMALMAP");
-            mat.DisableKeyword("_METALLICGLOSSMAP");
-            EditorUtility.SetDirty(mat);
+            IronGrillMaterial(RollerMaterials[i], shader, ironGrill, i, new Vector4(1f, 1f, 0f, 0f));
+        }
+
+        // The lever's, in the same iron and rust as the rollers, remapped on its own model.
+        ModelImporter leverImporter = AssetImporter.GetAtPath(LeverModelPath) as ModelImporter;
+        for (int i = 0; i < LeverMaterials.Length; ++i) {
+            Material mat = IronGrillMaterial(LeverMaterials[i], shader, ironGrill, i, LeverTiling[i]);
+            if (leverImporter != null) {
+                leverImporter.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), LeverSlots[i]), mat);
+            }
         }
 
         Material shell = AssetDatabase.LoadAssetAtPath<Material>(MockShellPath);
@@ -161,9 +200,37 @@ public static class BuildGrinderPrefab {
 
         AssetDatabase.SaveAssets();
         importer.SaveAndReimport();
-        notes.Add("Built " + PaintedSlots.Length + " painted and " + RollerMaterials.Length + " roller materials in " + MatDir
-                  + ", and mapped them and " + VanillaSlots.Length + " vanilla mocks onto the model.");
+        if (leverImporter != null) {
+            leverImporter.SaveAndReimport();
+        } else {
+            notes.Add("ERROR: no ModelImporter for " + LeverModelPath + " - run scripts/blender/build_grinder_lever.py.");
+        }
+        notes.Add("Built " + PaintedSlots.Length + " painted, " + RollerMaterials.Length + " roller and " + LeverMaterials.Length
+                  + " lever materials in " + MatDir + ", and mapped them and " + VanillaSlots.Length + " vanilla mocks onto the models.");
         return true;
+    }
+
+    /// <summary>
+    /// Plain iron or rust on the IronGrill_d mock: tint, metallic and smoothness from the roller tables by
+    /// <paramref name="look"/>, and <paramref name="tiling"/> (scale x, y, offset x, y) choosing the region.
+    /// </summary>
+    private static Material IronGrillMaterial(string name, Shader shader, Texture2D ironGrill, int look, Vector4 tiling) {
+        Material mat = LoadOrCreate(MatDir + "/" + name + ".mat", shader);
+        mat.SetTexture("_MainTex", ironGrill);
+        mat.SetTextureScale("_MainTex", new Vector2(tiling.x, tiling.y));
+        mat.SetTextureOffset("_MainTex", new Vector2(tiling.z, tiling.w));
+        mat.SetTexture("_MetallicTex", null);
+        mat.SetTexture("_BumpMap", null);
+        mat.SetColor("_Color", RollerTints[look]);
+        mat.SetFloat("_Metallic", RollerMetallic[look]);
+        mat.SetFloat("_Glossiness", RollerSmoothness[look]);
+        mat.SetFloat("_MetallicAlphaGloss", 0f);
+        mat.SetColor("_MetalColor", Color.white);
+        SetPieceFlags(mat);
+        mat.DisableKeyword("_NORMALMAP");
+        mat.DisableKeyword("_METALLICGLOSSMAP");
+        EditorUtility.SetDirty(mat);
+        return mat;
     }
 
     private static Material LoadOrCreate(string path, Shader shader) {
@@ -277,25 +344,19 @@ public static class BuildGrinderPrefab {
             notes.Add("ERROR: no 'Body' mesh in the model - the piece has no collision.");
         }
 
-        // ---- the funnel ---------------------------------------------------------
-        // The hopper is the feed: the box (FunnelBox) is hit before the hopper's own mesh collider from any
-        // side. The radial looks for the Switch on the very object the player is looking at.
+        // ---- the hopper -----------------------------------------------------------
+        // Only a point here: the hopper itself is DA_GrinderFeed (BuildFeedPrefab), which the Grinder spawns
+        // at this point when it is built.
         Transform funnelPoint = BuildHopperPrefab.FindDeep(root.transform, "Funnel");
-        GameObject funnel = new GameObject("FeedFunnel");
-        funnel.layer = PieceLayer;
-        funnel.transform.SetParent(body, worldPositionStays: false);
+        GameObject feedPoint = new GameObject("FeedPoint");
+        feedPoint.layer = PieceLayer;
+        feedPoint.transform.SetParent(body, worldPositionStays: false);
         if (funnelPoint != null) {
-            funnel.transform.position = funnelPoint.position;
+            feedPoint.transform.position = funnelPoint.position;
         } else {
-            funnel.transform.localPosition = new Vector3(0f, 1.25f, 0f);
-            notes.Add("Missing empty 'Funnel' - the feed collider was placed at a guessed position.");
+            feedPoint.transform.localPosition = new Vector3(0f, 1.445f, 0f);
+            notes.Add("Missing empty 'Funnel' - the hopper is placed at a guessed position.");
         }
-        BoxCollider funnelBox = funnel.AddComponent<BoxCollider>();
-        funnelBox.size = FunnelBox;
-        Switch feed = funnel.AddComponent<Switch>();
-        feed.m_name = "$DA_grinder_name";
-        feed.m_hoverText = "";
-        feed.m_holdRepeatInterval = -1f;
 
         // ---- core sockets -------------------------------------------------------
         List<Renderer> crystals = new List<Renderer>();
@@ -381,6 +442,47 @@ public static class BuildGrinderPrefab {
         }
         working.SetActive(false);
 
+        // ---- the lava tank's heat ------------------------------------------------------
+        // Always on, not part of _working: the tank is hot whether or not anything is being ground. The
+        // bubbling on top of it is played by GrinderHub every few seconds.
+        Transform lavaPoint = BuildHopperPrefab.FindDeep(root.transform, "LavaPoint");
+        GameObject heatAsset = AssetDatabase.LoadAssetAtPath<GameObject>(LavaHeatPath);
+        if (heatAsset != null) {
+            GameObject heat = Object.Instantiate(heatAsset, body, false);
+            heat.name = "LavaHeat";
+            heat.transform.position = lavaPoint != null ? lavaPoint.position : body.position + new Vector3(-0.84f, 0.98f, -0.12f);
+            heat.transform.rotation = Quaternion.identity;
+            BuildHopperPrefab.SetLayerRecursive(heat, DefaultLayer);
+            // Each system's own transform, since that is the only scale they read. The forge's glow is sized
+            // for its whole lava basin, so it starts at half before the overall shrink.
+            foreach (Transform system in heat.transform) {
+                float own = system.name == "Glow" ? 0.5f : 1f;
+                system.localScale = Vector3.one * own * LavaHeatScale;
+            }
+        } else {
+            notes.Add("Missing " + LavaHeatPath + " - run scripts/unity/lift_grinder_heat.py; the tank will not steam.");
+        }
+        if (lavaPoint == null) { notes.Add("Missing empty 'LavaPoint' - the lava effects were placed at a guessed position."); }
+
+        ParticleSystem bubble = null;
+        GameObject bubbleAsset = AssetDatabase.LoadAssetAtPath<GameObject>(LavaBubblePath);
+        if (bubbleAsset != null) {
+            GameObject bubbleGo = Object.Instantiate(bubbleAsset, body, false);
+            bubbleGo.name = "LavaBubble";
+            bubbleGo.transform.position = lavaPoint != null ? lavaPoint.position : body.position + new Vector3(-0.84f, 0.98f, -0.12f);
+            bubbleGo.transform.rotation = Quaternion.identity;
+            BuildHopperPrefab.SetLayerRecursive(bubbleGo, DefaultLayer);
+            // The lift keeps vanilla's own scales on every system (about 2 on most), so each is shrunk from its own.
+            foreach (ParticleSystem system in bubbleGo.GetComponentsInChildren<ParticleSystem>(true)) {
+                ParticleSystem.MainModule main = system.main;
+                main.playOnAwake = false;
+                system.transform.localScale = system.transform.localScale * LavaBubbleScale;
+            }
+            bubble = bubbleGo.GetComponent<ParticleSystem>();
+        } else {
+            notes.Add("Missing " + LavaBubblePath + " - run scripts/unity/lift_grinder_bubble.py; the tank will not bubble.");
+        }
+
         // ---- spinning parts --------------------------------------------------------
         // Each roller turns about its length, which is its longest extent; the axis is stored in the
         // roller's own space, since the model's import transform makes that anything but obvious.
@@ -402,6 +504,45 @@ public static class BuildGrinderPrefab {
             axes.Add(roller.InverseTransformDirection(world).normalized);
             // Counter-rotating, so the two pull what is fed down between them.
             speeds.Add(i == 0 ? RollerSpeed : -RollerSpeed);
+        }
+
+        // ---- the start lever --------------------------------------------------------------
+        // Dropped in at the model's own import transform, as the model is, so the two line up. The Switch sits
+        // on its root, where the hover and use rays find it from the plate's collider and the arm's.
+        Switch lever = null;
+        Transform leverArm = null;
+        Vector3 leverAxis = Vector3.right;
+        GameObject leverModel = AssetDatabase.LoadAssetAtPath<GameObject>(LeverModelPath);
+        if (leverModel != null) {
+            GameObject leverGo = Object.Instantiate(leverModel);
+            leverGo.name = "Lever";
+            leverGo.transform.SetParent(body, worldPositionStays: false);
+            BuildHopperPrefab.SetLayerRecursive(leverGo, PieceLayer);
+            Transform leverBase = BuildHopperPrefab.FindDeep(leverGo.transform, "LeverBase");
+            if (leverBase != null) {
+                BuildHopperPrefab.AddMeshCollider(leverBase.gameObject, notes);
+            } else {
+                notes.Add("Missing 'LeverBase' in the lever model.");
+            }
+            leverArm = BuildHopperPrefab.FindDeep(leverGo.transform, "LeverArm");
+            MeshFilter armMesh = leverArm != null ? leverArm.GetComponent<MeshFilter>() : null;
+            if (armMesh != null && armMesh.sharedMesh != null) {
+                // A box round the arm that swings with it, a little fatter than the arm itself.
+                BoxCollider grab = leverArm.gameObject.AddComponent<BoxCollider>();
+                Bounds b = armMesh.sharedMesh.bounds;
+                grab.center = b.center;
+                grab.size = b.size + Vector3.one * (LeverGrabPadding / Mathf.Max(0.0001f, leverArm.lossyScale.x));
+                // It swings front to back, about the machine's own left-right axis, kept in the arm's space.
+                leverAxis = leverArm.InverseTransformDirection(body.right).normalized;
+            } else {
+                notes.Add("ERROR: no 'LeverArm' mesh in the lever model - the lever will not swing.");
+            }
+            lever = leverGo.AddComponent<Switch>();
+            lever.m_name = "$DA_grinder_name";
+            lever.m_hoverText = "$DA_grinder_lever_use";
+            lever.m_holdRepeatInterval = -1f;
+        } else {
+            notes.Add("ERROR: could not load " + LeverModelPath + " - the Grinder has no lever and cannot be started.");
         }
 
         // ---- piece components --------------------------------------------------------
@@ -453,13 +594,22 @@ public static class BuildGrinderPrefab {
         sockets.NeedMessage = "$DA_Need_MoltenCore";
 
         GrinderHub hub = root.AddComponent<GrinderHub>();
-        hub.Funnel = feed;
+        hub.FeedPoint = feedPoint.transform;
         hub.Spinners = spinners.ToArray();
         hub.SpinAxes = axes.ToArray();
         hub.SpinSpeeds = speeds.ToArray();
         hub.WorkingVisuals = working;
-        hub.FeedEffects = BuildHopperPrefab.MockEffects(FeedEffectMocks, notes);
         hub.ProduceEffects = BuildHopperPrefab.MockEffects(ProduceEffectMocks, notes);
+        hub.LavaBubble = bubble;
+        hub.Lever = lever;
+        hub.LeverArm = leverArm;
+        hub.LeverAxis = leverAxis;
+        hub.LeverEffects = BuildHopperPrefab.MockEffects(LeverEffectMocks, notes);
+
+        // ---- size -------------------------------------------------------------------
+        // Last, so every collider, point and effect above was laid out at model size and grows with it. The
+        // spin axes are in each roller's own space, which a uniform scale leaves alone.
+        body.localScale = Vector3.one * Scale;
 
         // ---- save -------------------------------------------------------------------
         Bounds all = new Bounds(root.transform.position, Vector3.zero);
@@ -480,9 +630,58 @@ public static class BuildGrinderPrefab {
         }
         AssetDatabase.SaveAssets();
         notes.Add("Built " + PrefabPath + " (bundle '" + BundleName + "').");
+        // The first run after the lever's material remaps change has saved the prefab without the lever, and
+        // without a word: the reimport of its model was still settling.
+        GrinderHub savedHub = saved.GetComponent<GrinderHub>();
+        if (savedHub == null || savedHub.Lever == null || savedHub.LeverArm == null) {
+            notes.Add("ERROR: the saved prefab has no lever - run the builder again.");
+        }
 
         Selection.activeObject = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
         EditorGUIUtility.PingObject(Selection.activeObject);
+    }
+
+    /// <summary>
+    /// The hopper: DA_GrinderFeed, a networked object of its own (see GrinderFeed for why) that the Grinder
+    /// spawns into its hopper's mouth. Just a ZNetView, a Container the size of the hopper, and a box
+    /// collider round the hopper on the non-solid piece layer, so Use on the hopper opens it and nothing
+    /// bumps into it. GrinderStore.ConfigureFeedPrefab finishes the Container at runtime; the mod registers
+    /// the prefab with the game.
+    /// </summary>
+    private static void BuildFeedPrefab(List<string> notes) {
+        GameObject root = new GameObject(FeedName);
+        root.layer = PieceNonSolidLayer;
+
+        ZNetView nview = root.AddComponent<ZNetView>();
+        nview.m_persistent = true;
+        nview.m_distant = false;
+        nview.m_type = ZDO.ObjectType.Default;
+        nview.m_syncInitialScale = false;
+
+        BoxCollider box = root.AddComponent<BoxCollider>();
+        box.size = FunnelBox * Scale;
+        box.isTrigger = false;
+
+        Container container = root.AddComponent<Container>();
+        container.m_name = "$DA_grinder_feed_name";
+        container.m_width = 8;
+        container.m_height = 2;
+        container.m_privacy = Container.PrivacySetting.Public;
+        container.m_checkGuardStone = true;
+        container.m_autoDestroyEmpty = false;
+        container.m_discoverStat = PlayerStatType.None;
+
+        root.AddComponent<GrinderFeed>();
+
+        GameObject saved = PrefabUtility.SaveAsPrefabAsset(root, FeedPath);
+        Object.DestroyImmediate(root);
+        if (saved == null) {
+            notes.Add("ERROR: failed to save " + FeedPath);
+            return;
+        }
+        TagForBundle(FeedPath);
+        AssetDatabase.SaveAssets();
+        notes.Add("Built " + FeedPath + " (bundle '" + BundleName + "').");
     }
 
     /// <summary>

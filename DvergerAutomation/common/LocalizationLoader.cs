@@ -1,14 +1,9 @@
-﻿using DvergerAutomation;
-using Jotunn.Entities;
-using Jotunn.Managers;
+﻿using Jotunn.Entities;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Reflection;
-using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading.Tasks;
 
 namespace DvergerAutomation.Common {
     internal static class LocalizationLoader {
@@ -43,12 +38,12 @@ namespace DvergerAutomation.Common {
                         Dictionary<string, string> cached_localization = SimpleJson.SimpleJson.DeserializeObject<Dictionary<string, string>>(cached_translation_file);
                         UpdateLocalizationWithMissingKeys(internal_localization, cached_localization);
                         Logger.LogDebug($"Reading {translationFolder}/{localization_name[2]}.json");
-                        File.WriteAllText($"{translationFolder}/{localization_name[2]}.json", SimpleJson.SimpleJson.SerializeObject(cached_localization));
-                        string updated_local_translation = File.ReadAllText($"{translationFolder}/{localization_name[2]}.json");
+                        string updated_local_translation = SimpleJson.SimpleJson.SerializeObject(cached_localization);
+                        File.WriteAllText($"{translationFolder}/{localization_name[2]}.json", updated_local_translation);
                         Localization.AddJsonFile(localization_name[2], updated_local_translation);
-                    } catch {
+                    } catch (Exception ex) {
+                        Logger.LogWarning($"The translation file {translationFolder}/{localization_name[2]}.json could not be read ({ex.Message}); it is replaced with the built-in one.");
                         File.WriteAllText($"{translationFolder}/{localization_name[2]}.json", cleaned_localization);
-                        Logger.LogDebug($"Reading {embeddedResouce}");
                         Localization.AddJsonFile(localization_name[2], cleaned_localization);
                     }
                 } else {
@@ -60,21 +55,21 @@ namespace DvergerAutomation.Common {
             }
         }
 
+        // The player's file keeps the translations they made, takes any key added since, and drops any
+        // key the mod no longer has.
         private static Dictionary<string, string> UpdateLocalizationWithMissingKeys(Dictionary<string, string> internal_localization, Dictionary<string, string> cached_localization) {
-            if (internal_localization.Keys != cached_localization.Keys) {
-                List<string> extra_keys = cached_localization.Keys.ToList();
-                foreach (KeyValuePair<string, string> entry in internal_localization) {
-                    extra_keys.Remove(entry.Key);
-                    if (!cached_localization.ContainsKey(entry.Key)) {
-                        Logger.LogDebug($"Adding missing localization key {entry.Key}");
-                        cached_localization.Add(entry.Key, entry.Value);
-                    }
+            List<string> extra_keys = new List<string>(cached_localization.Keys);
+            foreach (KeyValuePair<string, string> entry in internal_localization) {
+                extra_keys.Remove(entry.Key);
+                if (!cached_localization.ContainsKey(entry.Key)) {
+                    Logger.LogDebug($"Adding missing localization key {entry.Key}");
+                    cached_localization.Add(entry.Key, entry.Value);
                 }
-                if (extra_keys.Count > 0) {
-                    Logger.LogDebug($"Removing extra keys {string.Join(",", extra_keys)}.");
-                    foreach (string key in extra_keys) {
-                        cached_localization.Remove(key);
-                    }
+            }
+            if (extra_keys.Count > 0) {
+                Logger.LogDebug($"Removing extra keys {string.Join(",", extra_keys)}.");
+                foreach (string key in extra_keys) {
+                    cached_localization.Remove(key);
                 }
             }
             return cached_localization;
