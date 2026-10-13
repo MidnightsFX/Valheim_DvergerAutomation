@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using UnityEngine;
 
 namespace DvergerAutomation {
@@ -39,7 +40,7 @@ namespace DvergerAutomation {
         public string RemoveMessage = "$DA_Remove_BlackCore";
         public string NeedMessage = "$DA_Need_BlackCore";
 
-        /// <summary>Raised on every client whenever a socket changes, after the visuals are updated.</summary>
+        /// <summary>Raised on every client once it sees a socket change, after the visuals are updated.</summary>
         internal event Action Changed;
 
         /// <summary>A line about the piece shown above each socket's action; set by the piece.</summary>
@@ -52,6 +53,13 @@ namespace DvergerAutomation {
         private string resultRpc;
         private string revokeRpc;
         private string refreshRpc;
+
+        // The mask as this client last showed it, -1 before the first look.
+        private int shownMask = -1;
+        // Running while a refresh waits for the mask it announced to arrive.
+        private Coroutine awaitingMask;
+        // How long a refresh waits for that mask before leaving it to the timer.
+        private const float MaskWait = 5f;
 
         private void Awake() {
             nview = GetComponentInParent<ZNetView>();
@@ -75,8 +83,14 @@ namespace DvergerAutomation {
                 for (int slot = 0; slot < Switches.Length; ++slot) { WireSwitch(slot); }
             }
 
+            CheckMask();
             // Shortly after load, and now and then, so a late ZDO sync still lights the sockets.
-            InvokeRepeating(nameof(UpdateVisuals), 1f, 4f);
+            InvokeRepeating(nameof(CheckMaskTimer), 1f, 4f);
+        }
+
+        // Unity stops the coroutine without running it out.
+        private void OnDisable() {
+            awaitingMask = null;
         }
 
         internal int SlotCount => Switches != null ? Switches.Length : 0;
@@ -181,9 +195,40 @@ namespace DvergerAutomation {
             return true;
         }
 
+        // The owner's refresh travels ahead of the ZDO it has just written, so on every other client it lands
+        // while the old mask is still there, and a piece relinking off it would use the old core count - an
+        // AutoSorter with Require Cores on stayed dormant until its next scan. So the change is announced
+        // when the mask itself moves, watched every frame for a few seconds after a refresh.
         private void RPC_Refresh(long sender) {
-            UpdateVisuals();
-            Changed?.Invoke();
+            if (CheckMask() || awaitingMask != null) { return; }
+            awaitingMask = StartCoroutine(AwaitMask());
+        }
+
+        private IEnumerator AwaitMask() {
+            for (float waited = 0f; waited < MaskWait; waited += Time.deltaTime) {
+                yield return null;
+                if (CheckMask()) { break; }
+            }
+            awaitingMask = null;
+        }
+
+        private void CheckMaskTimer() {
+            CheckMask();
+        }
+
+        /// <summary>
+        /// Shows the mask and raises <see cref="Changed"/> if it differs from the one shown last; the first
+        /// look only shows it. True when the mask had changed.
+        /// </summary>
+        private bool CheckMask() {
+            if (nview == null || !nview.IsValid()) { return false; }
+            int mask = Mask;
+            if (mask == shownMask) { return false; }
+            bool first = shownMask < 0;
+            shownMask = mask;
+            UpdateVisuals(mask);
+            if (!first) { Changed?.Invoke(); }
+            return true;
         }
 
         private void WireSwitch(int slot) {
@@ -245,9 +290,7 @@ namespace DvergerAutomation {
             return Localization.instance.Localize(status + "[<color=yellow><b>$KEY_Use</b></color>] " + action);
         }
 
-        private void UpdateVisuals() {
-            if (nview == null || !nview.IsValid()) { return; }
-            int mask = Mask;
+        private void UpdateVisuals(int mask) {
             for (int slot = 0; slot < SlotCount; ++slot) {
                 bool filled = (mask & (1 << slot)) != 0;
                 if (SlotVisuals != null && slot < SlotVisuals.Length) { SetActiveSafe(SlotVisuals[slot], filled); }

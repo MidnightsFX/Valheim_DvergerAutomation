@@ -199,9 +199,13 @@ public static class BuildGrinderPrefab {
             importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), VanillaSlots[i]), mock);
         }
 
+        // Read/Write: the game builds its creatures' navmesh from piece meshes at runtime and skips, with an
+        // error each pass, any it cannot read; and PieceFooting measures the footing from the vertices.
+        importer.isReadable = true;
         AssetDatabase.SaveAssets();
         importer.SaveAndReimport();
         if (leverImporter != null) {
+            leverImporter.isReadable = true;
             leverImporter.SaveAndReimport();
         } else {
             notes.Add("ERROR: no ModelImporter for " + LeverModelPath + " - run scripts/blender/build_grinder_lever.py.");
@@ -344,6 +348,10 @@ public static class BuildGrinderPrefab {
         } else {
             notes.Add("ERROR: no 'Body' mesh in the model - the piece has no collision.");
         }
+        // What the Grinder is set down by: a box under the stone slab. Without it the nearest collider to the
+        // ground was a core socket's sphere or the lever's grab box (see PieceFooting). Added before the
+        // machine is scaled up, so it scales with it.
+        PieceFooting.Add(body, modelInstance, part => part.name.StartsWith("core"), notes);
 
         // ---- the hopper -----------------------------------------------------------
         // Only a point here: the hopper itself is DA_GrinderFeed (BuildFeedPrefab), which the Grinder spawns

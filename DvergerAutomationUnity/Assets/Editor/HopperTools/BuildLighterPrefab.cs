@@ -11,6 +11,10 @@ using Object = UnityEngine.Object;
 /// Builds the Dverger Lighter: its materials from the Substance Painter export, and
 /// Assets/Custom/Prefabs/DA_Lighter.prefab from DvergerLighter.fbx.
 ///
+/// The body is painted in Substance (Materials/Lighter/Lighter.spp): one texture set per FBX material,
+/// exported with Unity's Standard (Metallic) preset as AlbedoTransparency, MetallicSmoothness and an OpenGL
+/// Normal, which is the layout Custom/Piece reads (_MainTex, _MetallicTex with smoothness in alpha, _BumpMap).
+///
 /// Re-runnable, like the other builders: re-export the model or the textures and run it again rather than
 /// hand-editing the prefab. Until a texture set is painted its material is a flat colour, so the piece can
 /// be placed and tested before the art is done. The material helpers are copied from the Seeking Table's
@@ -30,6 +34,7 @@ public static class BuildLighterPrefab {
     private const string BundleName = "automation";
 
     private const string TexDir = "Assets/Custom/Materials/Lighter";
+    private const string TexPrefix = TexDir + "/DvergerLighter_";
     private const string PieceShader = "JVLmock_Custom/Piece";
 
     // The smelter's chimney smoke, made small: a wisp from each upward pipe while there is fuel to give.
@@ -113,14 +118,12 @@ public static class BuildLighterPrefab {
 
         int painted = 0;
         foreach (string set in TextureSets) {
-            string prefix = TexDir + "/" + set;
-            bool isPainted = File.Exists(prefix + "_Base_color.png");
-            Texture2D albedo = isPainted ? ConfigureAlbedo(prefix + "_Base_color.png", notes) : null;
-            Texture2D normal = isPainted ? ConfigureNormal(prefix + "_Normal_DirectX.png", notes) : null;
-            Texture2D metalGloss = isPainted
-                ? PackMetallicGloss(prefix + "_Metallic.png", prefix + "_Roughness.png", prefix + "_MetallicGloss.png", notes)
-                : null;
-            if (isPainted) { ++painted; }
+            string prefix = TexPrefix + set;
+            Texture2D albedo = ConfigureTexture(prefix + "_AlbedoTransparency.png", TextureImporterType.Default, true);
+            Texture2D metalGloss = ConfigureTexture(prefix + "_MetallicSmoothness.png", TextureImporterType.Default, false);
+            Texture2D normal = ConfigureTexture(prefix + "_Normal.png", TextureImporterType.NormalMap, false);
+            bool isPainted = albedo != null;
+            if (isPainted) { ++painted; } else { notes.Add("'" + set + "' is not painted yet - a flat colour stands in."); }
 
             string matPath = TexDir + "/Lighter_" + set + ".mat";
             Material mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
@@ -135,11 +138,12 @@ public static class BuildLighterPrefab {
             mat.SetColor("_Color", isPainted ? Color.white : Fallback[set]);
 
             // The eitr refinery's scalars, as the other machines use (see BuildHopperPrefab for why not the
-            // blast furnace's). An unpainted set has no metallic map, so its metal is the scalar alone.
+            // blast furnace's): the metallic map decides what is metal, its alpha how smooth, scaled by
+            // _MetallicAlphaGloss. Without a map the scalar alone decides.
             bool metal = !NotMetal.Contains(set);
-            mat.SetFloat("_Metallic", isPainted ? 1f : (metal ? 0.8f : 0f));
+            mat.SetFloat("_Metallic", metalGloss != null ? 1f : (metal ? 0.8f : 0f));
             mat.SetFloat("_MetallicAlphaGloss", 0.75f);
-            mat.SetFloat("_Glossiness", isPainted ? 0.15f : (metal ? 0.45f : 0.1f));
+            mat.SetFloat("_Glossiness", metalGloss != null ? 0.15f : (metal ? 0.45f : 0.1f));
             mat.SetColor("_MetalColor", Color.white);
             mat.SetFloat("_BumpScale", 1f);
             mat.SetFloat("_AddRain", 1f);
@@ -151,6 +155,9 @@ public static class BuildLighterPrefab {
             if (isNew) { AssetDatabase.CreateAsset(mat, matPath); } else { EditorUtility.SetDirty(mat); }
             importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), set), mat);
         }
+        // Read/Write: the game builds its creatures' navmesh from piece meshes at runtime and skips, with an
+        // error each pass, any it cannot read; and PieceFooting measures the footing from the vertices.
+        importer.isReadable = true;
         AssetDatabase.SaveAssets();
         importer.SaveAndReimport();
 
@@ -163,72 +170,27 @@ public static class BuildLighterPrefab {
         if (on) { mat.EnableKeyword(keyword); } else { mat.DisableKeyword(keyword); }
     }
 
-    private static Texture2D ConfigureAlbedo(string path, List<string> notes) {
+    /// <summary>
+    /// Import settings for a Substance export: colour in sRGB, the metallic map as linear data with its
+    /// smoothness alpha kept, the normal map as a normal map. These exports are OpenGL-convention, which is
+    /// Unity's own, so the green channel is not flipped. Null, quietly, for a texture not exported yet.
+    /// </summary>
+    private static Texture2D ConfigureTexture(string path, TextureImporterType type, bool sRGB) {
         TextureImporter ti = AssetImporter.GetAtPath(path) as TextureImporter;
-        if (ti == null) { notes.Add("Missing texture " + path); return null; }
-        if (ti.textureType != TextureImporterType.Default || !ti.sRGBTexture) {
-            ti.textureType = TextureImporterType.Default;
-            ti.sRGBTexture = true;
+        if (ti == null) { return null; }
+        bool alpha = path.EndsWith("_MetallicSmoothness.png");
+        if (ti.textureType != type || ti.sRGBTexture != sRGB || ti.flipGreenChannel
+            || (alpha && ti.alphaSource != TextureImporterAlphaSource.FromInput)) {
+            ti.textureType = type;
+            ti.sRGBTexture = sRGB;
+            ti.flipGreenChannel = false;
+            if (alpha) {
+                ti.alphaSource = TextureImporterAlphaSource.FromInput;
+                ti.alphaIsTransparency = false;
+            }
             ti.SaveAndReimport();
         }
         return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
-    }
-
-    // The DirectX normal, green-flipped into Unity's convention: this Substance setup's OpenGL normal
-    // exports come out flat (see BuildHopperPrefab).
-    private static Texture2D ConfigureNormal(string path, List<string> notes) {
-        TextureImporter ti = AssetImporter.GetAtPath(path) as TextureImporter;
-        if (ti == null) { notes.Add("Missing normal " + path); return null; }
-        if (ti.textureType != TextureImporterType.NormalMap || !ti.flipGreenChannel) {
-            ti.textureType = TextureImporterType.NormalMap;
-            ti.flipGreenChannel = true;
-            ti.SaveAndReimport();
-        }
-        return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
-    }
-
-    // RGB = metallic, A = smoothness (1 - roughness): Custom/Piece has no roughness slot of its own.
-    private static Texture2D PackMetallicGloss(string metalPath, string roughPath, string outPath, List<string> notes) {
-        if (!File.Exists(metalPath)) { notes.Add("Missing metallic " + metalPath); return null; }
-        Texture2D metal = Decode(metalPath);
-        Texture2D rough = File.Exists(roughPath) ? Decode(roughPath) : null;
-        if (rough != null && (rough.width != metal.width || rough.height != metal.height)) {
-            notes.Add("Roughness size differs from metallic for " + Path.GetFileName(metalPath) + " - packed with flat smoothness instead.");
-            Object.DestroyImmediate(rough);
-            rough = null;
-        }
-
-        Color32[] m = metal.GetPixels32();
-        Color32[] r = rough != null ? rough.GetPixels32() : null;
-        Color32[] packed = new Color32[m.Length];
-        for (int i = 0; i < m.Length; ++i) {
-            byte metallic = m[i].r;
-            byte smooth = r != null ? (byte)(255 - r[i].r) : (byte)128;
-            packed[i] = new Color32(metallic, metallic, metallic, smooth);
-        }
-        Texture2D outTex = new Texture2D(metal.width, metal.height, TextureFormat.RGBA32, false);
-        outTex.SetPixels32(packed);
-        File.WriteAllBytes(outPath, outTex.EncodeToPNG());
-        Object.DestroyImmediate(outTex);
-        Object.DestroyImmediate(metal);
-        if (rough != null) { Object.DestroyImmediate(rough); }
-
-        AssetDatabase.ImportAsset(outPath, ImportAssetOptions.ForceUpdate);
-        TextureImporter ti = AssetImporter.GetAtPath(outPath) as TextureImporter;
-        if (ti != null) {
-            ti.textureType = TextureImporterType.Default;
-            ti.sRGBTexture = false;
-            ti.alphaSource = TextureImporterAlphaSource.FromInput;
-            ti.alphaIsTransparency = false;
-            ti.SaveAndReimport();
-        }
-        return AssetDatabase.LoadAssetAtPath<Texture2D>(outPath);
-    }
-
-    private static Texture2D Decode(string path) {
-        Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-        tex.LoadImage(File.ReadAllBytes(path));
-        return tex;
     }
 
     // ==================================================================== prefab
@@ -268,6 +230,9 @@ public static class BuildLighterPrefab {
         foreach (MeshFilter filter in modelInstance.GetComponentsInChildren<MeshFilter>(includeInactive: true)) {
             BuildHopperPrefab.AddMeshCollider(filter.gameObject, notes);
         }
+        // What the Lighter is set down by: a box under its feet. Without it the only box was the tank hatch's,
+        // and the Lighter went into the ground to put that on the point aimed at (see PieceFooting).
+        PieceFooting.Add(body, modelInstance, null, notes);
 
         // ---- the fuel tank ----------------------------------------------------------
         // A box round the hatch on the wooden stand, hit before the hatch's own mesh from the front.

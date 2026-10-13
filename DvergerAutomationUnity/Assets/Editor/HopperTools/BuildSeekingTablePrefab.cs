@@ -66,6 +66,12 @@ public static class BuildSeekingTablePrefab {
     private const int CoreSlots = 4;
     private const float OrbFallbackHeight = 1.9f;
 
+    // The box the table is set down by (see BuildPrefab): the lower tier of the base, its bottom on the
+    // model's own, so the table stands exactly on the point aimed at. The size of the one first added to the
+    // prefab by hand.
+    private static readonly Vector3 FootingSize = new Vector3(2.59f, 0.21f, 2.5f);
+    private static readonly Vector3 FootingCenter = new Vector3(0f, 0.105f, 0f);
+
     [MenuItem("DvergerAutomation/Build Seeking Table (materials + prefab)")]
     public static void BuildAll() {
         List<string> notes = new List<string>();
@@ -145,6 +151,10 @@ public static class BuildSeekingTablePrefab {
         if (coreMock != null) {
             importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), "BlackCore"), coreMock);
         }
+        // The game builds its creatures' navigation mesh from the pieces' own meshes at runtime, and skips -
+        // with an error logged for every pass - any mesh it is not allowed to read. Unreadable, the table is
+        // not in the navmesh at all. The AutoSorter's and Hopper's models are readable too.
+        importer.isReadable = true;
 
         AssetDatabase.SaveAssets();
         importer.SaveAndReimport();
@@ -293,6 +303,17 @@ public static class BuildSeekingTablePrefab {
             if (markers.Exists(c => c.gameObject == filter.gameObject)) { continue; }
             BuildHopperPrefab.AddMeshCollider(filter.gameObject, notes);
         }
+
+        // The footing. Vanilla sets a placement ghost down by whichever of its colliders comes closest to the
+        // point aimed at, and only counts boxes, spheres and convex meshes - the model's mesh collider is not
+        // convex, so it is skipped (Player.UpdatePlacementGhost). Without this box the nearest left would be
+        // a core socket's sphere, 1.9m up a pillar: the table went into the ground to put that sphere on the
+        // aimed point, buried up to its cores and pushed sideways. A box under the base is always nearest the
+        // ground, so the base sits on it, as the AutoSorter's and the Hopper's own boxes do for them.
+        BoxCollider footing = bodyGo.AddComponent<BoxCollider>();
+        footing.size = FootingSize;
+        footing.center = FootingCenter;
+        footing.isTrigger = false;
 
         // ---- the orb -----------------------------------------------------------
         Transform orbPoint = BuildHopperPrefab.FindDeep(root.transform, "OrbPoint");

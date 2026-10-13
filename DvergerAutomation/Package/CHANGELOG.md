@@ -1,3 +1,7 @@
+**0.12.1**
+- Fixes build placement issues with the Seeking table
+- Fixes Cores not showing up or allowing placement for the autosorter in multiplayer
+
 **0.12.0**
 - Adds the Dverger Seeking Table, a Mistlands machine that lists everything in the chests around it and lets you search for and take any of it, respects chest access.
 	- Black Cores set into its pillars let it reach chests further away.
