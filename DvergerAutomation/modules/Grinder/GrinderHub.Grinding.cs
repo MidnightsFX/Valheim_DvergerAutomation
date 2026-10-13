@@ -32,8 +32,8 @@ namespace DvergerAutomation {
             try {
                 OwnerTick();
             } catch (Exception ex) {
-                // Read the queue back off the ZDO next time, whatever this left in the cached copy.
-                ForgetQueue();
+                // The cached queue is kept: a batch whose output already landed in the chest has left it,
+                // and reading the queue back off the ZDO would grind that item again.
                 Logger.LogError($"[Grinder] tick failed: {ex}");
             }
         }
@@ -270,7 +270,14 @@ namespace DvergerAutomation {
             // items saved twice. Saved before the hopper lets go, so a failure in between leaves an item in
             // both rather than in neither.
             entries.AddRange(added);
-            SaveQueue(zdo);
+            try {
+                SaveQueue(zdo);
+            } catch {
+                // Not saved, so the entries must not stay in the cached copy either: read it back off the
+                // ZDO, where the hopper's items are not queued yet.
+                ForgetQueue();
+                throw;
+            }
             foreach (ItemDrop.ItemData item in taken) { inv.RemoveItem(item); }
             if (wasEmpty) { Anchor(zdo, 0f, State.Working); }
             if (ValConfig.EnableDebugMode.Value) {

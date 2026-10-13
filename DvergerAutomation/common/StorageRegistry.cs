@@ -159,7 +159,8 @@ namespace DvergerAutomation {
 
         // ---- the items version ----------------------------------------------------
 
-        // Load, before vanilla's own work: true when the reload would bring nothing new and can be skipped.
+        // Load, before vanilla's own work: true when the reload would bring nothing new and the inventory
+        // need not be read again.
         internal static bool SkipsLoad(Container container) {
             ZNetView nview = container.m_nview;
             if (nview == null || !nview.IsValid()) { return false; }
@@ -216,11 +217,15 @@ namespace DvergerAutomation {
     [HarmonyPatch(typeof(Container), "Load")]
     internal static class Container_Load_StorageRegistry_Patch {
         // First, so a skipped reload is skipped before anything else prepares for it.
+        //
+        // A skipped reload still answers true, as vanilla's would: the ZDO did move, and its caller
+        // (CheckForChanges) only then redraws the open lid and lets an emptied cargo crate go - opening or
+        // closing a chest changes nothing but its in-use flag. The postfix leaves the version alone.
         [HarmonyPriority(Priority.First)]
         private static bool Prefix(Container __instance, ref bool __result, out bool __state) {
             __state = false;
             if (StorageRegistry.SkipsLoad(__instance)) {
-                __result = false;
+                __result = true;
                 return false;
             }
             __state = true;

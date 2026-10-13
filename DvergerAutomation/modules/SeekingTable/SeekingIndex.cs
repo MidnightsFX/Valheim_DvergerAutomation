@@ -62,7 +62,8 @@ namespace DvergerAutomation {
         // How often the table checks whether a container has come or gone, and the longest it goes without
         // redrawing its chest list anyway.
         private const float RescanCheckInterval = 1f;
-        private const float RescanInterval = 15f;
+        // Short: a boat or cart moving out of range changes nothing the registry counts, and the walk is cheap.
+        private const float RescanInterval = 3f;
         private const float RefreshInterval = 0.25f;
         private const float GroundScanInterval = 1f;
         // How long a take is held off a total at most, should what it came from never change.
@@ -272,18 +273,37 @@ namespace DvergerAutomation {
             return take.Chest == null || StorageRegistry.Version(take.Chest) != take.Revision;
         }
 
-        // Summed rather than chained, so the same chests in another order - the registry is walked in load
-        // order, which a rescan can change - read as unchanged.
+        // Order-independent, so the same chests in another order - the registry is walked in load order,
+        // which a rescan can change - read as unchanged. Which chests are listed and how far their items
+        // have moved are kept apart: items versions only ever go up, so their sum rises with any change
+        // and two chests changing at once cannot cancel out. A ground item's stack can go either way, so
+        // each item and its stack are hashed together before they are added up.
         private static int Signature() {
             unchecked {
-                int hash = Chests.Count * 31 + Ground.Count;
+                int listed = Chests.Count * 31 + Ground.Count;
+                int versions = 0;
                 foreach (Container chest in Chests) {
-                    hash += (chest.GetInstanceID() * 397) ^ StorageRegistry.Version(chest);
+                    listed += chest.GetInstanceID() * 397;
+                    versions += StorageRegistry.Version(chest);
                 }
+                int ground = 0;
                 foreach (ItemDrop drop in Ground) {
-                    hash += (drop.GetInstanceID() * 397) ^ drop.m_itemData.m_stack;
+                    ground += Mix(drop.GetInstanceID() * 397 + drop.m_itemData.m_stack);
                 }
-                return hash;
+                return (listed * 486187739 + versions) * 486187739 + ground;
+            }
+        }
+
+        // A full avalanche (MurmurHash3's finaliser), so nearby inputs land far apart.
+        private static int Mix(int value) {
+            unchecked {
+                uint h = (uint)value;
+                h ^= h >> 16;
+                h *= 0x85EBCA6B;
+                h ^= h >> 13;
+                h *= 0xC2B2AE35;
+                h ^= h >> 16;
+                return (int)h;
             }
         }
 

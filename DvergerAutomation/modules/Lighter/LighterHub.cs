@@ -160,7 +160,16 @@ namespace DvergerAutomation {
             int units = 0;
             for (int i = 0; i < toFill.Count; ++i) {
                 if (amounts[i] <= 0) { continue; }
-                FuelBurners.Add(toFill[i], amounts[i]);
+                try {
+                    FuelBurners.Add(toFill[i], amounts[i]);
+                } catch (Exception ex) {
+                    // Its fuel has already left the tank: it goes back, so one piece that will not take
+                    // fuel - a modded one, say - costs the rest of the pass nothing.
+                    ItemDrop fuelItem = FuelBurners.FuelItem(toFill[i]);
+                    if (fuelItem != null) { inv.AddItem(fuelItem.gameObject, amounts[i]); }
+                    Logger.LogWarning($"[Lighter] fuelling {toFill[i].name} failed; its fuel went back in the tank: {ex.Message}");
+                    continue;
+                }
                 ++pieces;
                 units += amounts[i];
             }

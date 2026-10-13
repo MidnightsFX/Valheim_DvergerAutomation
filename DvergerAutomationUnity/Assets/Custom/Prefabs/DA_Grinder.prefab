@@ -16138,18 +16138,6 @@ MonoBehaviour:
   WorkingVisuals: {fileID: 1017656735616377578}
   ProduceEffects:
     m_effectPrefabs:
-    - m_prefab: {fileID: 4223252235143539128, guid: ec7fb72be08fb8a4ba6306ddd1df9276,
-        type: 3}
-      m_enabled: 1
-      m_variant: -1
-      m_attach: 0
-      m_follow: 0
-      m_inheritParentRotation: 0
-      m_inheritParentScale: 0
-      m_multiplyParentVisualScale: 0
-      m_randomRotation: 0
-      m_scale: 0
-      m_childTransform: 
     - m_prefab: {fileID: 8643864209681931484, guid: 56e4420df98d08f4f8128d0c66e3f405,
         type: 3}
       m_enabled: 1

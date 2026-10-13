@@ -93,9 +93,15 @@ namespace DvergerAutomation {
         private readonly List<Smelter> ownedSmelters = new List<Smelter>();
         private readonly List<Smelter> stationScratch = new List<Smelter>();
         private readonly List<ItemDrop.ItemData> itemScratch = new List<ItemDrop.ItemData>();
+        private readonly List<Collider> colliderScratch = new List<Collider>();
 
         // Live pieces only - the placement ghost has no ZDO, and links or feeds nothing.
         private bool IsLive => nview != null && nview.GetZDO() != null;
+
+        // Whether OnEnable signed this hub up. Asked in OnDisable rather than IsLive: the game clears a
+        // piece's ZDO before it destroys it, whether it is taken down or unloaded with its zone, so by then
+        // the hub no longer looks live - and its stations would keep its speed-up for the session.
+        private bool registered;
 
         /// <summary>Whether this client owns the hopper, and so is the only one allowed to write its store.</summary>
         internal bool IsOwner => nview != null && nview.IsValid() && nview.IsOwner();
@@ -125,12 +131,14 @@ namespace DvergerAutomation {
 
         private void OnEnable() {
             if (!IsLive) { return; }
+            registered = true;
             HopperNetwork.Register(this);
             loop = StartCoroutine(TickRoutine());
         }
 
         private void OnDisable() {
-            if (!IsLive) { return; }
+            if (!registered) { return; }
+            registered = false;
             if (loop != null) {
                 StopCoroutine(loop);
                 loop = null;
@@ -226,18 +234,45 @@ namespace DvergerAutomation {
         /// Every station on the Smelter component within the hopper's current reach, whatever its type,
         /// that no ward keeps the hopper's builder out of. The scan narrows this to the targets; the [C]
         /// popup offers all of it, which is why it ignores whether the hopper is dormant. The builder rather
-        /// than whoever is looking, so every client - a dedicated server included - links the same stations.
+        /// than whoever is looking, so every client - a dedicated server included - links the same stations;
+        /// a hopper with no builder on record (spawned rather than built) asks for this client's player.
+        ///
+        /// A station counts as in reach when any part of it is, not just its middle, so a big one at the
+        /// edge of the radius is still fed.
         /// </summary>
         internal void StationsInRange(List<Smelter> into) {
             long builder = piece != null ? piece.GetCreator() : 0L;
+            if (builder == 0L) { builder = StorageScan.LocalPlayerId(); }
             Vector3 pos = transform.position;
-            float sqr = EffectiveRadius * EffectiveRadius;
+            float radius = EffectiveRadius;
+            float sqr = radius * radius;
+            float outer = (radius + MaxStationReach) * (radius + MaxStationReach);
             foreach (Smelter smelter in HopperNetwork.Stations()) {
-                if ((smelter.transform.position - pos).sqrMagnitude > sqr) { continue; }
+                float distance = (smelter.transform.position - pos).sqrMagnitude;
+                if (distance > outer) { continue; }
                 if (smelter.m_nview == null || !smelter.m_nview.IsValid()) { continue; }
-                if (!StorageScan.Permits(smelter.transform.position, builder)) { continue; }
+                if (distance > sqr && !ReachesInto(smelter, pos, sqr)) { continue; }
+                // Nobody to ask for on a dedicated server with no builder on record: the ward is not checked.
+                if (builder != 0L && !StorageScan.Permits(smelter.transform.position, builder)) { continue; }
                 into.Add(smelter);
             }
+        }
+
+        // How far a station's colliders can stand from its middle: well past the largest vanilla station.
+        private const float MaxStationReach = 10f;
+
+        // Whether any of a station's colliders comes within the radius, by its bounds.
+        private bool ReachesInto(Smelter smelter, Vector3 pos, float sqr) {
+            smelter.GetComponentsInChildren(colliderScratch);
+            bool reaches = false;
+            foreach (Collider collider in colliderScratch) {
+                if (collider != null && collider.enabled && (collider.bounds.ClosestPoint(pos) - pos).sqrMagnitude <= sqr) {
+                    reaches = true;
+                    break;
+                }
+            }
+            colliderScratch.Clear();
+            return reaches;
         }
 
         // ---- targets --------------------------------------------------------
@@ -470,7 +505,7 @@ namespace DvergerAutomation {
                 int room = smelter.m_maxOre - smelter.GetQueueSize();
                 if (room <= 0) { continue; }
 
-                Dictionary<string, string> feedable = HopperNetwork.Feedable(smelter);
+                Dictionary<string, List<string>> feedable = HopperNetwork.Feedable(smelter);
                 bool fed = false;
                 // GetAllItems hands back the live backing list and emptied stacks drop out of it.
                 itemScratch.Clear();
@@ -478,7 +513,10 @@ namespace DvergerAutomation {
                 foreach (ItemDrop.ItemData item in itemScratch) {
                     if (room <= 0 || moved >= budget) { break; }
                     if (item == null || item.m_shared == null || item.m_dropPrefab == null) { continue; }
-                    if (!feedable.TryGetValue(item.m_shared.m_name, out string ore) || item.m_dropPrefab.name != ore) { continue; }
+                    if (!feedable.TryGetValue(item.m_shared.m_name, out List<string> ores)) { continue; }
+                    // The prefab name only once the shared name matched: reading it allocates.
+                    string ore = item.m_dropPrefab.name;
+                    if (!ores.Contains(ore)) { continue; }
                     // Enchanted gear shares m_shared.m_name with its mundane counterpart. Never melt one.
                     if (EpicLootIntegration.IsProtectedItem(item)) { continue; }
 

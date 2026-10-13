@@ -79,8 +79,14 @@ namespace DvergerAutomation {
 
             Inventory inv = box.GetInventory();
             if (inv == null) { return; }   // prefab, or an instance whose Awake has not run yet
+            // Never fewer rows than its items sit in: a lowered setting would hide them, and the store read
+            // as full, until a reload grew the grid back - and an unchanged one is not reloaded.
+            int height = box.m_height;
+            foreach (ItemDrop.ItemData item in inv.GetAllItems()) {
+                if (item != null) { height = Mathf.Max(height, item.m_gridPos.y + 1); }
+            }
             inv.m_width = Width;
-            inv.SetHeight(box.m_height);
+            inv.SetHeight(height);
         }
     }
 }

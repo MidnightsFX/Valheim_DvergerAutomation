@@ -28,8 +28,8 @@ namespace DvergerAutomation {
         // rather than overlapping every collider within a hopper's reach.
         private static readonly List<Smelter> AllStations = new List<Smelter>();
 
-        // What each station melts: the shared name its items carry, to the prefab name it is queued under.
-        private static readonly Dictionary<Smelter, Dictionary<string, string>> FeedableByStation = new Dictionary<Smelter, Dictionary<string, string>>();
+        // What each station melts: the shared name its items carry, to the prefab names queued under it.
+        private static readonly Dictionary<Smelter, Dictionary<string, List<string>>> FeedableByStation = new Dictionary<Smelter, Dictionary<string, List<string>>>();
 
         // A handoff takes a round trip, and a station whose owner keeps it for its own hopper is asked again
         // less and less often, up to this.
@@ -62,11 +62,12 @@ namespace DvergerAutomation {
         }
 
         /// <summary>
-        /// What a station melts, by the shared name an item carries, mapped to the prefab name it is queued
-        /// under: the station's conversions, read once rather than for every item on every pass.
+        /// What a station melts, by the shared name an item carries, mapped to the prefab names it is queued
+        /// under: the station's conversions, read once rather than for every item on every pass. Mostly one
+        /// prefab a name; a mod's item can share a vanilla one's name.
         /// </summary>
-        internal static Dictionary<string, string> Feedable(Smelter smelter) {
-            if (FeedableByStation.TryGetValue(smelter, out Dictionary<string, string> feedable)) { return feedable; }
+        internal static Dictionary<string, List<string>> Feedable(Smelter smelter) {
+            if (FeedableByStation.TryGetValue(smelter, out Dictionary<string, List<string>> feedable)) { return feedable; }
             if (FeedableByStation.Count > AllStations.Count + 64) {
                 Scratch.Clear();
                 foreach (Smelter known in FeedableByStation.Keys) {
@@ -75,10 +76,15 @@ namespace DvergerAutomation {
                 foreach (Smelter gone in Scratch) { FeedableByStation.Remove(gone); }
                 Scratch.Clear();
             }
-            feedable = new Dictionary<string, string>();
+            feedable = new Dictionary<string, List<string>>();
             foreach (Smelter.ItemConversion conversion in smelter.m_conversion) {
                 if (conversion.m_from == null || conversion.m_from.m_itemData == null) { continue; }
-                feedable[conversion.m_from.m_itemData.m_shared.m_name] = conversion.m_from.gameObject.name;
+                string name = conversion.m_from.m_itemData.m_shared.m_name;
+                if (!feedable.TryGetValue(name, out List<string> prefabs)) {
+                    prefabs = new List<string>();
+                    feedable[name] = prefabs;
+                }
+                prefabs.Add(conversion.m_from.gameObject.name);
             }
             FeedableByStation[smelter] = feedable;
             return feedable;

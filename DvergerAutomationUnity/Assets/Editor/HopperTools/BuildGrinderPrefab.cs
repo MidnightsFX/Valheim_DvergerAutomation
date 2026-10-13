@@ -102,9 +102,10 @@ public static class BuildGrinderPrefab {
 
     private static readonly string[] PlaceEffectMocks = { "JVLmock_vfx_Place_forge", "JVLmock_sfx_build_hammer_metal" };
     private static readonly string[] HitEffectMocks = { "JVLmock_vfx_HitSparks", "JVLmock_sfx_metal_blocked" };
-    // As each item is broken down: the eitr refinery's crunch as its grinder takes soft tissue, the
-    // windmill's grinding, and a spray of rock chips.
-    private static readonly string[] ProduceEffectMocks = { "JVLmock_fx_refinery_addtissue", "JVLmock_sfx_mill_produce", "JVLmock_vfx_RockHit" };
+    // As each item is broken down: the windmill's grinding and a spray of rock chips. Not the eitr refinery's
+    // fx_refinery_addtissue: its particles sit on a child 4m up and 1.6m aside, where the refinery's intake
+    // is, so they rained blood and skin flakes from high above the Grinder (Carl, 2026-10-12).
+    private static readonly string[] ProduceEffectMocks = { "JVLmock_sfx_mill_produce", "JVLmock_vfx_RockHit" };
 
     // Degrees per second. Heavy spiked drums: slower than the refinery's near-700 reads as more weight.
     private const float RollerSpeed = 240f;

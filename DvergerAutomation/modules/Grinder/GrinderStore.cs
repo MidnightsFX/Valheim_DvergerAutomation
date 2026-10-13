@@ -12,7 +12,7 @@ namespace DvergerAutomation {
         /// <summary>Rows in either container, as the server's settings allow them.</summary>
         internal const int MinRows = 1;
         internal const int MaxRows = 8;
-        internal const int DefaultRows = 2;
+        internal const int DefaultRows = 4;
 
         internal static void ConfigurePrefab(GameObject prefab) {
             MachineStore.Setup(prefab, StorePath, "$DA_grinder_store_name", ValConfig.GrinderStoreRows, MinRows, MaxRows, StorageRegistry.Kind.GrinderStore);

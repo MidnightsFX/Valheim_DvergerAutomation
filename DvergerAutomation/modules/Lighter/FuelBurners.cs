@@ -117,7 +117,8 @@ namespace DvergerAutomation {
             return item != null && item.m_itemData != null && item.m_itemData.m_shared != null ? item.m_itemData.m_shared.m_name : null;
         }
 
-        private static ItemDrop FuelItem(Component burner) {
+        /// <summary>The item prefab the piece burns.</summary>
+        internal static ItemDrop FuelItem(Component burner) {
             switch (burner) {
                 case Fireplace fire: return fire.m_fuelItem;
                 case CookingStation oven: return oven.m_fuelItem;

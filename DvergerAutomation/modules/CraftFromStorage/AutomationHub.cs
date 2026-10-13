@@ -61,6 +61,11 @@ namespace DvergerAutomation {
         // Live pieces only - the placement ghost has no ZDO, nothing to link and no inventory to protect.
         private bool IsLive => nview != null && nview.GetZDO() != null;
 
+        // Whether OnEnable signed this hub up. Asked in OnDisable rather than IsLive: the game clears a
+        // piece's ZDO before it destroys it, whether it is taken down or unloaded with its zone, so by then
+        // the hub no longer looks live.
+        private bool registered;
+
         private void Awake() {
             nview = GetComponent<ZNetView>();
             // The only Container under the piece is the deposit box; the root itself has none.
@@ -79,13 +84,15 @@ namespace DvergerAutomation {
 
         private void OnEnable() {
             if (!IsLive) { return; }
+            registered = true;
             ContainerNetwork.Register(this);
             scanLoop = StartCoroutine(ScanLoopRoutine());
             vehicleLoop = StartCoroutine(VehicleLoopRoutine());
         }
 
         private void OnDisable() {
-            if (!IsLive) { return; }
+            if (!registered) { return; }
+            registered = false;
             if (scanLoop != null) {
                 StopCoroutine(scanLoop);
                 scanLoop = null;

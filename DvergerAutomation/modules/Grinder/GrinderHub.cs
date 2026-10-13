@@ -283,8 +283,6 @@ namespace DvergerAutomation {
             try {
                 TryLoad(zdo);
             } catch (Exception ex) {
-                // Read the queue back off the ZDO next time, whatever this left in the cached copy.
-                ForgetQueue();
                 Logger.LogError($"[Grinder] loading the hopper failed: {ex}");
             }
         }

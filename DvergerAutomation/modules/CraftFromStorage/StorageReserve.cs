@@ -313,6 +313,17 @@ namespace DvergerAutomation {
         }
 
         private static void ToPlayer(List<Entry> group) {
+            if (group.Count == 0) { return; }
+            if (Player.m_localPlayer == null) {
+                // Dead or between worlds: no pack to put them in and no feet to drop them at. Held here, so
+                // the refund pass keeps offering them to their chest until there is someone to give them to.
+                float now = Time.time;
+                foreach (Entry entry in group) {
+                    entry.LastWanted = now;
+                    Entries.Add(entry);
+                }
+                return;
+            }
             foreach (Entry entry in group) { PlayerDelivery.Give(entry.Item); }
         }
 

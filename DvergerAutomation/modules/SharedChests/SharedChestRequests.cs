@@ -399,7 +399,7 @@ namespace DvergerAutomation {
                 item = item.Clone();
                 item.m_stack -= landed;
             }
-            PlayerDelivery.Give(item, preferred);
+            PlayerDelivery.Give(item, preferred, asIfDropped: true);
         }
 
         // Eaten through vanilla's own path, out of a one-slot inventory holding just the unit that
@@ -408,7 +408,7 @@ namespace DvergerAutomation {
         private static void Consume(ItemDrop.ItemData item) {
             Player player = Player.m_localPlayer;
             if (player == null) {
-                PlayerDelivery.Give(item);
+                PlayerDelivery.Give(item, null, asIfDropped: true);
                 return;
             }
             Inventory scratch = new Inventory("da", null, 1, 1);

@@ -279,8 +279,11 @@ namespace DvergerAutomation {
         /// </summary>
         private static void IndexTargets(AutomationHub hub) {
             ReleaseTargets();
+            // Asked again here rather than trusted from the last scan: a ward's permissions can change
+            // without a container coming or going, which is all that makes a sort rescan.
+            long playerId = StorageScan.LocalPlayerId();
             foreach (Container target in hub.LinkedContainers) {
-                if (!IsSortTarget(target)) { continue; }
+                if (!IsSortTarget(target) || !StorageScan.IsAccessible(target, playerId)) { continue; }
                 Inventory dst = target.GetInventory();
                 if (dst == null) { continue; }
                 foreach (ItemDrop.ItemData have in dst.GetAllItems()) {
