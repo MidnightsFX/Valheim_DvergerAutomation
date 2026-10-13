@@ -1,3 +1,7 @@
+**0.12.2**
+- Improves ward ownership check compatibility with other mods
+
+
 **0.12.1**
 - Fixes build placement issues with the Seeking table
 - Fixes Cores not showing up or allowing placement for the autosorter in multiplayer

@@ -26,6 +26,12 @@ namespace DvergerAutomation {
         /// <c>PrivateArea.CheckAccess</c> rule, for any player rather than only the local one. That makes it
         /// safe on a dedicated server, where vanilla's dereferences a local player there is not, and it
         /// allocates nothing. Checks that should flash the ward at the player keep vanilla's.
+        ///
+        /// Ward mods replace that rule with their own. Protective Wards lets anyone into a ward set to
+        /// "Permit everyone", or into one overlapping a ward they are permitted in, through its patch on
+        /// <c>CheckAccess</c> and without putting them on the ward's list, so the copy above turns them
+        /// away from chests they can open by hand. When it does and the player is the local one, the game's
+        /// own check, with whatever those mods made of it, has the last word.
         /// </summary>
         internal static bool Permits(Vector3 point, long playerId) {
             bool covered = false;
@@ -35,7 +41,15 @@ namespace DvergerAutomation {
                 if ((area.m_piece != null && area.m_piece.GetCreator() == playerId) || area.IsPermitted(playerId)) { return true; }
                 covered = true;
             }
-            return !covered;
+            if (!covered) { return true; }
+            // Only reached when a ward says no, so the list vanilla allocates is rarely paid for.
+            return IsLocalPlayer(playerId) && PrivateArea.CheckAccess(point, 0f, flash: false);
+        }
+
+        // Vanilla's check reads Player.m_localPlayer, so it only speaks for that player, and only when there
+        // is one: never on a dedicated server.
+        private static bool IsLocalPlayer(long playerId) {
+            return playerId != 0L && Player.m_localPlayer != null && playerId == LocalPlayerId();
         }
 
         /// <summary>
