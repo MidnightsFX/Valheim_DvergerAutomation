@@ -34,6 +34,17 @@ namespace DvergerAutomation {
         /// </summary>
         private const float ButtonGap = 16f;
         private const float PopupGap = 6f;
+        /// <summary>Gap between our button and another mod's button it has been moved past. No frame to clear there.</summary>
+        private const float ClearGap = 6f;
+        /// <summary>
+        /// How far past the container panel's rect a button has to start to clear its wood frame, which
+        /// reaches 10px past it. About where [C] lands by default, and where QuickStackStore starts its column.
+        /// </summary>
+        private const float OutsideFrame = 14f;
+        /// <summary>Bounds <see cref="MovePastOthers"/>'s search, each pass of which moves strictly further right.</summary>
+        private const int ClearPasses = 8;
+
+        private static readonly Vector3[] Corners = new Vector3[4];
 
         // Plate and cell metrics, MyLittleUI's: 32px slots on a 34px pitch, three to a row.
         internal const float PlateWidth = 120f;
@@ -162,6 +173,70 @@ namespace DvergerAutomation {
             rect.anchoredPosition = rightMiddle + new Vector2(ButtonGap, 0f);
         }
 
+        /// <summary>
+        /// Puts [C] beside the deposit button, then further right past any other mod's button already
+        /// there, and brings <paramref name="popup"/> (when built) along. QuickStackStore moves Take All
+        /// and hangs a column of its own buttons (Quick Stack, Take All, Store All, Restock, Sort) off the
+        /// container panel's right edge, exactly where [C] and its popup go; past that column there is
+        /// still room for both before the crafting panel's repair column, at the largest GUI scale.
+        ///
+        /// Called each time [C] comes up for a container, after the deposit button has been placed the
+        /// same way (<see cref="DepositAll.Refresh"/>). Vanilla's only buttons on the panel are Take All and
+        /// Place stacks, both left of [C], so without such a mod this is just <see cref="PlaceBeside"/>.
+        /// </summary>
+        internal static void Place(GameObject button, RectTransform deposit, RectTransform popup) {
+            RectTransform rect = (RectTransform)button.transform;
+            PlaceBeside(rect, deposit);
+            // The popup hangs off [C]'s right edge, down beside the panel, so that has to be clear too.
+            MovePastOthers(rect, PopupGap + PlateWidth, hangs: true);
+            if (popup != null) { AlignPopup(popup, rect); }
+        }
+
+        /// <summary>
+        /// Moves one of our buttons on the container panel right, past any other mod's button that
+        /// overlaps it - or overlaps the <paramref name="beside"/> width to its right, from its top down
+        /// to the panel's foot when something <paramref name="hangs"/> there. It is never left straddling
+        /// the panel's right edge, where it would sit on the wood frame: past that it starts just outside.
+        ///
+        /// Run as one of our buttons comes up for a container. Another mod lays its buttons out and shows
+        /// them in InventoryGui.Show, which always runs before the UpdateContainer that brings ours up.
+        /// </summary>
+        internal static void MovePastOthers(RectTransform rect, float beside, bool hangs) {
+            RectTransform panel = rect.parent as RectTransform;
+            if (panel == null) { return; }
+            float outside = panel.rect.xMax + OutsideFrame;
+
+            for (int pass = 0; pass < ClearPasses; ++pass) {
+                Rect self = RectIn(panel, rect);
+                float bottom = hangs ? Mathf.Min(self.yMin, panel.rect.yMin) : self.yMin;
+                Rect area = Rect.MinMaxRect(self.xMin, bottom, self.xMax + beside, self.yMax);
+
+                float clear = float.NegativeInfinity;
+                for (int i = 0; i < panel.childCount; ++i) {
+                    if (!(panel.GetChild(i) is RectTransform other) || other == rect) { continue; }
+                    // Ours: the deposit button, both [C]s and both popups.
+                    if (!other.gameObject.activeSelf || other.name.StartsWith("DA_")) { continue; }
+                    if (other.GetComponent<Button>() == null) { continue; }
+
+                    Rect taken = RectIn(panel, other);
+                    if (taken.Overlaps(area)) { clear = Mathf.Max(clear, taken.xMax); }
+                }
+                if (float.IsNegativeInfinity(clear)) { return; }
+
+                float left = clear + ClearGap;
+                if (left < outside && left + self.width > panel.rect.xMax) { left = outside; }
+                rect.anchoredPosition += new Vector2(left - self.xMin, 0f);
+            }
+        }
+
+        /// <summary>A child's rect in <paramref name="space"/>'s local coordinates, whatever its anchors and pivot.</summary>
+        private static Rect RectIn(RectTransform space, RectTransform child) {
+            child.GetWorldCorners(Corners);
+            Vector3 min = space.InverseTransformPoint(Corners[0]);
+            Vector3 max = space.InverseTransformPoint(Corners[2]);
+            return Rect.MinMaxRect(min.x, min.y, max.x, max.y);
+        }
+
         /// <summary>Sets [C]'s caption and tooltip, already localized.</summary>
         internal static void Dress(GameObject button, string caption, string title, string text) {
             TMP_Text label = Label(button);
@@ -180,7 +255,8 @@ namespace DvergerAutomation {
         /// <summary>
         /// An empty, hidden popup to the right of [C], top edges level, growing downwards. There is room
         /// for it there at every GUI scale: nothing of vanilla's sits between the container panel and the
-        /// crafting panel's repair column. Null when the GUI has no inventory slot to clone cells from.
+        /// crafting panel's repair column, and <see cref="Place"/> has already moved [C] past any other
+        /// mod's buttons. Null when the GUI has no inventory slot to clone cells from.
         /// </summary>
         internal static RectTransform CreatePopup(InventoryGui gui, GameObject button, string name) {
             if (gui == null || button == null) { return null; }
@@ -189,20 +265,24 @@ namespace DvergerAutomation {
                 return null;
             }
 
-            RectTransform anchor = (RectTransform)button.transform;
             GameObject root = new GameObject(name, typeof(RectTransform));
             // A new GameObject starts on Default; everything cloned into it is on the GUI's layer.
             root.layer = gui.m_container.gameObject.layer;
             root.SetActive(false);
             RectTransform popup = (RectTransform)root.transform;
             popup.SetParent(gui.m_container, false);
+            AlignPopup(popup, (RectTransform)button.transform);
+            popup.SetAsLastSibling();
+            return popup;
+        }
+
+        /// <summary>Hangs the popup off [C]'s right edge, top edges level.</summary>
+        private static void AlignPopup(RectTransform popup, RectTransform anchor) {
             popup.anchorMin = anchor.anchorMin;
             popup.anchorMax = anchor.anchorMax;
             popup.pivot = new Vector2(0f, 1f);
             popup.anchoredPosition = anchor.anchoredPosition
                 + new Vector2((1f - anchor.pivot.x) * ButtonSize + PopupGap, (1f - anchor.pivot.y) * ButtonSize);
-            popup.SetAsLastSibling();
-            return popup;
         }
 
         /// <summary>Sizes the popup to the plates stacked into it; <paramref name="y"/> is where the next one would have gone.</summary>

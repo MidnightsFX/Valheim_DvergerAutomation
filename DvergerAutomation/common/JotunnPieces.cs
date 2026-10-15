@@ -1,4 +1,5 @@
 ﻿using BepInEx.Configuration;
+using HarmonyLib;
 using Jotunn.Configs;
 using Jotunn.Entities;
 using Jotunn.Managers;
@@ -123,6 +124,7 @@ namespace DvergerAutomation.Common {
                 PiecesReady = true;
                 // Bring the current config (default or server-synced) into effect a single time now that
                 // every mod prefab is resolvable. This also covers values that arrived early via config sync.
+                ApplyEnabled(jbuildpiece);
                 ApplyWorkbench(jbuildpiece);
                 ApplyCategory(jbuildpiece);
                 // The prefab database is populated by now, so a config naming an item that does not
@@ -177,8 +179,12 @@ namespace DvergerAutomation.Common {
             }
 
             // Setup enable/disable
+            void Enabled_SettingChanged(object sender, EventArgs e) {
+                if (!PiecesReady || jbuildpiece.Objs.ScenePiece == null) { return; }
+                ApplyEnabled(jbuildpiece);
+            }
             jbuildpiece.Cfgs.Enabled = ValConfig.BindServerConfig($"{jbuildpiece.Name}", $"Enabled", jbuildpiece.Enabled, $"Enable/Disable the {jbuildpiece.Name}.");
-            jbuildpiece.Cfgs.Enabled.SettingChanged += BuildRecipeChanged_SettingChanged;
+            jbuildpiece.Cfgs.Enabled.SettingChanged += Enabled_SettingChanged;
             // Setup piece category
             jbuildpiece.Cfgs.PieceCategory = ValConfig.BindServerConfig($"{jbuildpiece.Name}", $"Piece Category", jbuildpiece.Category, "Piece category for building.", PieceCategories.GetAcceptableValueList());
             void CraftingCategory_SettingChanged(object sender, EventArgs e) {
@@ -228,6 +234,51 @@ namespace DvergerAutomation.Common {
             PieceManager.Instance.AddPiece(new CustomPiece(jbuildpiece.Objs.Prefab, fixReference: true, piececfg));
         }
 
+        // Applies the configured Enabled switch to the in-scene piece. Setting m_enabled alone is not enough
+        // in a running game: everything the hammer lets you place - the build menu, favourites, recent
+        // pieces, copying the piece you look at - reads the player's list of available pieces, which the game
+        // only rebuilds when the hammer is equipped, the category changes or something is picked up. Until
+        // then a piece switched off stays placeable, so the list is rebuilt here.
+        private static void ApplyEnabled(JotunnBuildPiece jbuildpiece) {
+            Piece piece = jbuildpiece.Objs.ScenePiece;
+            if (piece == null) { return; }
+
+            bool enabled = jbuildpiece.Cfgs.Enabled.Value;
+            if (piece.m_enabled == enabled) { return; }
+            piece.m_enabled = enabled;
+            if (ValConfig.EnableDebugMode.Value == true) { Logger.LogInfo($"{jbuildpiece.Name} can {(enabled ? "now" : "no longer")} be built."); }
+            RefreshLocalBuildMenu();
+        }
+
+        // Rebuilds the local player's list of pieces they can place, and learns any piece just switched on
+        // that they already have the materials for. Nothing to do before the player spawns: spawning builds
+        // the list from scratch, which is what makes the server's values hold from the moment you join.
+        private static void RefreshLocalBuildMenu() {
+            Player player = Player.m_localPlayer;
+            // Leaving a server restores the local config while the world is being torn down, and both
+            // calls below reach into these.
+            if (player == null || ZoneSystem.instance == null || ObjectDB.instance == null) { return; }
+            player.UpdateKnownRecipesList();
+            player.UpdateAvailablePiecesList();
+        }
+
+        /// <summary>
+        /// Takes switched-off pieces back out of a hammer's available list. The game skips disabled pieces
+        /// itself, except while building costs nothing (the nocost command, or a world with every piece
+        /// unlocked), where it lists them all - a piece the server switched off stays out regardless.
+        /// </summary>
+        internal static void RemoveDisabledPieces(PieceTable table) {
+            foreach (JotunnBuildPiece jbuildpiece in BuildPieces) {
+                Piece piece = jbuildpiece.Objs.ScenePiece;
+                if (piece == null || piece.m_enabled) { continue; }
+                table.m_enabledPieces.Remove(piece);
+                if (!table.m_availablePieces.Remove(piece)) { continue; }
+                foreach (List<Piece> category in table.m_availablePiecesByCategory) {
+                    category.Remove(piece);
+                }
+            }
+        }
+
         // Applies the configured crafting station to the in-scene piece. Callers must ensure the scene
         // prefab is resolved (PiecesReady) before invoking this.
         private static void ApplyWorkbench(JotunnBuildPiece jbuildpiece) {
@@ -272,10 +323,7 @@ namespace DvergerAutomation.Common {
             Piece piece = jbuildpiece.Objs.ScenePiece;
             if (piece == null) { return; }
 
-            // Switching the piece off and back on has to make it buildable again.
-            piece.m_enabled = jbuildpiece.Cfgs.Enabled.Value;
-            if (!piece.m_enabled) { return; }
-
+            // Applied while the piece is switched off too, so switching it back on needs nothing from here.
             List<Piece.Requirement> requirements = new List<Piece.Requirement>();
             foreach (PieceCost entry in jbuildpiece.Cfgs.UpdatedCost) {
                 ItemDrop item = PrefabManager.Instance.GetPrefab(entry.prefab.Replace("JVLmock_", ""))?.GetComponent<ItemDrop>();
@@ -372,6 +420,13 @@ namespace DvergerAutomation.Common {
             }
             cost = new PieceCost() { prefab = recipe_segments[0], amount = amount, refundable = refundable };
             return true;
+        }
+    }
+
+    [HarmonyPatch(typeof(PieceTable), nameof(PieceTable.UpdateAvailable))]
+    internal static class PieceTable_UpdateAvailable_Patch {
+        private static void Postfix(PieceTable __instance) {
+            JotunnPiece.RemoveDisabledPieces(__instance);
         }
     }
 }

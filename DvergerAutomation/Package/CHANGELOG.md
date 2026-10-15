@@ -1,3 +1,8 @@
+**0.12.4**
+- The Autosorter and Hopper deposit buttons, filter buttons and filter popups no longer overlap QuickStackStore's container buttons.
+- Fixes the vanilla Place Stacks button reappearing on chests when QuickStackStore is set to hide it.
+- Machines the server switches off now leave the build menu right away and can no longer be placed, including in no-cost building.
+
 **0.12.3**
 - Fixes the Seeking Table saying the inventory is full when taking items with ExtraSlots
 

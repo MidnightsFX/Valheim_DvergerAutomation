@@ -36,6 +36,8 @@ namespace DvergerAutomation {
         }
 
         private static GameObject button;
+        /// <summary>The deposit button [C] is placed beside.</summary>
+        private static RectTransform deposit;
         private static RectTransform popup;
         private static readonly List<Cell> Cells = new List<Cell>();
 
@@ -47,10 +49,11 @@ namespace DvergerAutomation {
         // ---- the [C] button ----------------------------------------------------
 
         /// <summary>Builds [C] next to the deposit button. Called from <see cref="DepositAll.Attach"/>, once per InventoryGui.</summary>
-        internal static void Attach(InventoryGui gui, RectTransform deposit) {
+        internal static void Attach(InventoryGui gui, RectTransform depositButton) {
             if (gui.m_container.Find(ButtonName) != null) { return; }
 
-            button = FilterPopupUI.CreateButton(gui, ButtonName, deposit, OnButton);
+            button = FilterPopupUI.CreateButton(gui, ButtonName, depositButton, OnButton);
+            deposit = depositButton;
             popup = null;
             Cells.Clear();
             hub = null;
@@ -71,6 +74,8 @@ namespace DvergerAutomation {
                 hub = current;
                 Close();
                 bool show = current != null;
+                // Before it shows, so it never spends a frame on top of another mod's button.
+                if (show) { FilterPopupUI.Place(button, deposit, null); }
                 if (button.activeSelf != show) { button.SetActive(show); }
                 if (show) { Repaint(); }
                 return;

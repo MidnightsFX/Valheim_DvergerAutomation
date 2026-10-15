@@ -216,3 +216,9 @@ Epic Loot is a soft dependency: not having it installed changes nothing.
 
 **Multiplayer:** every player on the server needs the mod, and versions must match on major and minor.
 The Autosorter's settings are server-authoritative and only admins can change them.
+
+---
+
+If you enjoy my mods donations are appreciated. My mods will never be paid and donations are not required.
+
+<a href="https://ko-fi.com/midnightsfx"><img height="36" src="https://storage.ko-fi.com/cdn/kofi2.png?v=3" alt="Support me on Ko-fi"></a>

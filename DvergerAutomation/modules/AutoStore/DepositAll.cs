@@ -31,6 +31,15 @@ namespace DvergerAutomation {
         private enum Target { None, Sorter, Hopper }
 
         private static GameObject button;
+        /// <summary>Where the button sits as cloned: on Place stacks' slot.</summary>
+        private static Vector2 home;
+
+        /// <summary>
+        /// Whether Place stacks is hidden because this button took its slot. Only that is handed back:
+        /// another mod may hide Place stacks for good (QuickStackStore does by default), and showing it
+        /// again on every ordinary chest would undo that.
+        /// </summary>
+        private static bool hidStackAll;
 
         /// <summary>What the button is currently dressed as, so label and tooltip are rewritten only on a change.</summary>
         private static Target shown = Target.None;
@@ -55,10 +64,13 @@ namespace DvergerAutomation {
             // The template's rect is deliberately left exactly as cloned. Place stacks is a direct child
             // of the same Container panel, so the copy lands precisely on top of it - which is the point:
             // Refresh hides the original while ours is up, so the slot is taken over rather than shared.
+            // It only leaves that slot when another mod has put a button there (Place).
             button = go;
+            home = ((RectTransform)go.transform).anchoredPosition;
             // A fresh button has a blank label, so the first container opened must write its wording
             // even when it is the same kind as the last one opened before a logout.
             shown = Target.None;
+            hidStackAll = false;
 
             DepositFilterPanel.Attach(gui, (RectTransform)go.transform);
             HopperTargetPanel.Attach(gui, (RectTransform)go.transform);
@@ -72,7 +84,7 @@ namespace DvergerAutomation {
         ///
         /// Vanilla never touches the Place stacks GameObject's active state itself (it only wires the
         /// click in Awake), so there is nothing here to fight over it. Opening any ordinary chest runs
-        /// this again with target None and hands the button straight back.
+        /// this again with target None and hands the button straight back - if this is what hid it.
         /// </summary>
         internal static void Refresh(InventoryGui gui) {
             if (button == null) { return; }
@@ -80,10 +92,21 @@ namespace DvergerAutomation {
             Target target = TargetOf(gui != null ? gui.m_currentContainer : null, out HopperHub hopper);
             bool show = target != Target.None;
 
-            if (button.activeSelf != show) { button.SetActive(show); }
             if (gui != null && gui.m_stackAllButton != null) {
                 GameObject stackAll = gui.m_stackAllButton.gameObject;
-                if (stackAll.activeSelf == show) { stackAll.SetActive(!show); }
+                if (show && stackAll.activeSelf) {
+                    stackAll.SetActive(false);
+                    hidStackAll = true;
+                } else if (!show && hidStackAll) {
+                    hidStackAll = false;
+                    if (!stackAll.activeSelf) { stackAll.SetActive(true); }
+                }
+            }
+            if (button.activeSelf != show) {
+                // Before it shows, so it never spends a frame under another mod's button, and after
+                // Place stacks is out of the way, so that is not mistaken for one.
+                if (show) { Place(); }
+                button.SetActive(show);
             }
 
             if (show && target != shown) {
@@ -95,6 +118,19 @@ namespace DvergerAutomation {
             // takes, the Hopper's picks which stations it services.
             DepositFilterPanel.Show(target == Target.Sorter);
             HopperTargetPanel.Show(hopper);
+        }
+
+        /// <summary>
+        /// Puts the button back on Place stacks' slot, then moves it right past any other mod's button on
+        /// that slot, to just outside the panel. QuickStackStore puts a button there whenever it expects
+        /// Place stacks to be gone and is short of room: its Quick Stack with Randy's Equipment and Quick
+        /// Slots or Currency Pocket installed, and its only container button when it shows just one.
+        /// Each [C] is then placed beside wherever this ends up.
+        /// </summary>
+        private static void Place() {
+            RectTransform rect = (RectTransform)button.transform;
+            rect.anchoredPosition = home;
+            FilterPopupUI.MovePastOthers(rect, 0f, hangs: false);
         }
 
         /// <summary>Which of the mod's containers this is, if either, and the Hopper when it is that one.</summary>
